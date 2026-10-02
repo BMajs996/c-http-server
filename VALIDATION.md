@@ -29,3 +29,12 @@
 - An experimental direct-write path for cached responses did not show a reliable HTTP throughput benefit, so it was removed. The final code retains the existing response-write path.
 - Alternating old/new runs for a cached 32 KiB file, 5,000 requests per trial, concurrency 16, six trials per version: median successful throughput was 8,837 requests/s for the previous code and 8,614 requests/s for the optimized code, with high trial variance and zero errors. This benchmark does not establish a throughput improvement; the measured benefit is cache memory use.
 - Strict C11 build, cache unit tests, and all 39 HTTP/HTTPS integration tests passed. The cache unit test also passed with AddressSanitizer and UndefinedBehaviorSanitizer locally, with leak detection disabled in this runtime.
+
+## Phase 3: large-file transfers
+
+- Plain HTTP, uncached regular files now use `sendfile()` to nonblocking client sockets in bounded 64 KiB calls. HTTPS and unsupported `sendfile()` cases use the existing asynchronous read path. A source page-cache miss can still stall the reactor on slow storage; this path does not make disk I/O asynchronous.
+- A local 1 MiB-file benchmark with cache disabled, concurrency 8, and three trials of 100 requests measured median successful throughput of 2,350 requests/s before and 4,849 requests/s after (+106%); all 600 requests succeeded. This is a loopback workload, not a general capacity claim.
+- An uncached full-file and cross-chunk range test verified exact response bytes and that each plain HTTP response submitted only its file-open job. Existing slow-reader, disconnect, and HTTPS tests passed; HTTPS submitted disk read jobs as expected.
+- A local `LD_PRELOAD` test made `sendfile64()` return a successful partial transfer, then `EINVAL`. The remaining 887,656-byte range body matched the source exactly, and the server resumed through 27 worker read jobs after its file-open job.
+- A stress run held 100 idle sockets and 16 slow readers of an 8 MiB file while completing 5,000 health requests at concurrency 32 with zero errors. The server submitted 16 file-open jobs and no body-read jobs; 16 aborted responses were the slow readers closed by the test.
+- The strict TLS-enabled build and all 40 integration tests passed. A strict HTTP-only build also passed.

@@ -54,6 +54,7 @@ struct connection {
     int draining, timed_out;
     char metrics_body[8192];
     file_cache_entry *cached;
+    int sendfile_disabled;
     transport *socket_transport;
 };
 
@@ -212,6 +213,21 @@ static int write_buffer(connection *c, const char *buffer, size_t length, size_t
 }
 static void write_body(connection *c) {
     if (!c->remaining) { c->state = RESPONSE_COMPLETE; return; }
+    if(c->file_fd>=0 && !c->sendfile_disabled &&
+       c->chunk_offset==c->chunk_length && (c->status==200 || c->status==206)) {
+        /* Bound each reactor turn. sendfile advances file_offset only for
+         * bytes actually sent, so a partial write resumes at the right byte. */
+        size_t wanted=c->remaining<65536 ? (size_t)c->remaining : 65536;
+        ssize_t n=transport_sendfile(c->socket_transport,c->file_fd,
+                                     &c->file_offset,wanted,&c->interest);
+        if(n>0) {
+            c->remaining-=(size_t)n;c->sent+=(size_t)n;
+            return;
+        }
+        if(n==-2)return;
+        if(n==-3)c->sendfile_disabled=1;
+        else {c->state=CLOSING;return;}
+    }
     if (c->chunk_offset == c->chunk_length) {
         c->chunk_offset = 0;
         size_t wanted = c->remaining < sizeof c->chunk ? (size_t)c->remaining : sizeof c->chunk;
@@ -247,6 +263,7 @@ static void complete(connection *c) {
     c->sent = 0; c->logged = 0; c->timed_out = 0;
     c->extra_headers[0] = 0;
     c->open_ready = 0; c->file_offset = 0;
+    c->sendfile_disabled = 0;
     c->status = 0; c->body = NULL; c->type = NULL;
     c->body_length = c->remaining = 0;
     c->chunk_offset = c->chunk_length = 0;

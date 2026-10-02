@@ -657,6 +657,26 @@ class ServerTests(unittest.TestCase):
             self.assertLessEqual(values['c_http_cache_bytes'],1048576)
         finally:self.finish_extra(proc);path.unlink()
 
+    def test_uncached_plain_file_uses_sendfile_for_ranges_and_full_body(self):
+        proc,port=self.launch_config({'cache_bytes':0})
+        try:
+            before=self.metric_values(self.request_extra(port,'/metrics')[2])
+            start,end=32761,163900
+            status,headers,body=self.request_extra(port,'/large.bin',
+                {'Range':f'bytes={start}-{end}'})
+            self.assertEqual(status,206)
+            self.assertEqual(headers['Content-Range'],f'bytes {start}-{end}/{len(self.large)}')
+            self.assertEqual(body,self.large[start:end+1])
+            after_range=self.metric_values(self.request_extra(port,'/metrics')[2])
+            # Only the file-open job is needed; body reads bypass the disk pool.
+            self.assertEqual(after_range['c_http_file_jobs_submitted_total']-
+                             before['c_http_file_jobs_submitted_total'],1)
+            self.assertEqual(self.request_extra(port,'/large.bin')[2],self.large)
+            after_full=self.metric_values(self.request_extra(port,'/metrics')[2])
+            self.assertEqual(after_full['c_http_file_jobs_submitted_total']-
+                             after_range['c_http_file_jobs_submitted_total'],1)
+        finally:self.finish_extra(proc)
+
     def tls_files(self):
         if os.environ.get('C_HTTP_TEST_TLS')=='0':self.skipTest('HTTP-only build')
         if not shutil.which('openssl'):self.skipTest('OpenSSL CLI unavailable for temporary test certificates')
@@ -719,6 +739,8 @@ class ServerTests(unittest.TestCase):
             with socket.create_connection(('127.0.0.1',port)):
                 self.assertEqual(self.request_extra(port,'/health',context=context)[0],200)
             self.assertEqual(self.request_extra(port,'/health',context=context)[0],200)
+            values=self.metric_values(self.request_extra(port,'/metrics',context=context)[2])
+            self.assertGreater(values['c_http_file_jobs_submitted_total'],1)
         finally:self.finish_extra(proc)
 
     def test_https_graceful_shutdown_and_certificate_rejection(self):

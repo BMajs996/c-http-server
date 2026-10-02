@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
+#include <sys/sendfile.h>
 #include <sys/socket.h>
 #ifdef WITH_TLS
 #include <openssl/ssl.h>
@@ -127,6 +128,20 @@ ssize_t transport_write(transport *t,const void *data,size_t length,uint32_t *in
     ssize_t n=send(t->fd,data,length,0);
     if(n<0 && (errno==EAGAIN || errno==EWOULDBLOCK)){*interest=EPOLLOUT;return -2;}
     if(n<0 && errno==EINTR)return -2;
+    return n;
+}
+ssize_t transport_sendfile(transport *t,int file_fd,off_t *offset,size_t length,
+                           uint32_t *interest) {
+#ifdef WITH_TLS
+    if(t->ssl)return -3;
+#endif
+    ssize_t n=sendfile(t->fd,file_fd,offset,length);
+    if(n<0 && (errno==EAGAIN || errno==EWOULDBLOCK)) {
+        *interest=EPOLLOUT;return -2;
+    }
+    if(n<0 && errno==EINTR)return -2;
+    if(n<0 && (errno==EINVAL || errno==ENOSYS || errno==EOPNOTSUPP ||
+               errno==ESPIPE || errno==EOVERFLOW))return -3;
     return n;
 }
 int transport_shutdown(transport *t,uint32_t *interest) {

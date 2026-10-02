@@ -73,8 +73,14 @@ HTTP/1.0 persistence requires `Connection: keep-alive`.
 
 Headers are capped at 8 KiB. Unsupported methods return 405. Ambiguous framing,
 request bodies, and malformed headers are rejected and close the connection.
-Files stream through 32 KiB chunks, so large files do not require whole-file
-buffers. A bounded worker pool performs filesystem work outside the reactor.
+Uncached plain HTTP files use `sendfile()` to nonblocking client sockets in
+bounded 64 KiB calls.
+If the kernel cannot use `sendfile()`, the response resumes through the worker
+pool from the exact unsent offset. HTTPS files use worker-backed 32 KiB chunks.
+Large files do not require whole-file buffers. The worker pool performs file
+opening and fallback reads outside the reactor.
+The kernel can still stall a `sendfile()` call while fetching file pages from
+slow storage; the socket readiness guarantee does not make disk I/O asynchronous.
 
 Static responses provide MIME types, `nosniff`, weak metadata ETags,
 Last-Modified, and `Cache-Control: no-cache`. If-None-Match supports 304.

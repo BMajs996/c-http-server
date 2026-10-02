@@ -120,6 +120,7 @@ These are separate extensions after the first HTTP/1.1 release:
 - Multi-node coordination.
 - Encrypted persistent storage when a concrete sensitive-data use case exists.
 
-## Next step
+## Current progress
 
-Implement **Phase 1: the benchmark comparison tool** before beginning further performance changes.
+Phases 1–3 are implemented and locally validated. The next planned enhancement
+is **Phase 4: compression**.
