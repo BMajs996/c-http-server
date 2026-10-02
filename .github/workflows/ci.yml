@@ -1,0 +1,45 @@
+name: C HTTP server
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  build-test:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        compiler: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev openssl clang
+      - name: Strict build, integration tests, deterministic fuzzing
+        run: |
+          make CC=${{ matrix.compiler }} CFLAGS='-std=c11 -Wall -Wextra -Wpedantic -Werror -O2'
+          make test CC=${{ matrix.compiler }} CFLAGS='-std=c11 -Wall -Wextra -Wpedantic -Werror -O2'
+          make fuzz CC=${{ matrix.compiler }}
+      - name: HTTP-only build
+        env:
+          C_HTTP_TEST_TLS: '0'
+        run: |
+          make clean
+          make TLS=0 CC=${{ matrix.compiler }} CFLAGS='-std=c11 -Wall -Wextra -Wpedantic -Werror -O2'
+          make TLS=0 test
+  sanitizers:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libssl-dev openssl
+      - name: Address and undefined behavior sanitizers
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1
+        run: |
+          make CFLAGS='-std=c11 -Wall -Wextra -Wpedantic -Werror -g -O1 -fsanitize=address,undefined'
+          make test CFLAGS='-std=c11 -Wall -Wextra -Wpedantic -Werror -g -O1 -fsanitize=address,undefined'
+          make fuzz CFLAGS='-std=c11 -Wall -Wextra -Wpedantic -Werror -g -O1 -fsanitize=address,undefined'
+  coverage-fuzz:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y clang
+      - run: make fuzz_libfuzzer && ./fuzz_libfuzzer fuzz/corpus -runs=100000 -max_len=8224

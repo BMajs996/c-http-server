@@ -1,0 +1,23 @@
+{
+  "scheme": "http",
+  "host": "127.0.0.1",
+  "port": 8080,
+  "path": "/assets/style.css",
+  "concurrency": 32,
+  "requests": 100000,
+  "keep_alive": true,
+  "warmup": 20,
+  "completed": 100000,
+  "errors": 0,
+  "error_samples": [],
+  "elapsed_s": 11.8264,
+  "successful_requests_per_s": 8455.69,
+  "latency_ms": {
+    "p50": 2.655,
+    "p95": 9.47,
+    "p99": 15.336
+  },
+  "body_bytes": 44400000,
+  "client_python": "3.14.4",
+  "platform": "Linux-7.0.0-34-generic-x86_64-with-glibc2.43"
+}

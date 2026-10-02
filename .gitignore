@@ -1,0 +1,24 @@
+# Build outputs
+/http_server
+/fuzz_parser
+/fuzz_libfuzzer
+/test_file_cache
+*.o
+
+# Python generated files
+__pycache__/
+*.py[cod]
+
+# Local configuration and credentials
+/.agents/
+/.aws/
+/.codex/
+.env
+.env.*
+*.pem
+*.key
+
+# Runtime logs and temporary files
+*.log
+*.jsonl
+*.pid

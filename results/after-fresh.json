@@ -1,0 +1,22 @@
+{
+  "host": "127.0.0.1",
+  "port": 18089,
+  "path": "/health",
+  "concurrency": 16,
+  "requests": 1000,
+  "keep_alive": false,
+  "warmup": 20,
+  "completed": 1000,
+  "errors": 0,
+  "error_samples": [],
+  "elapsed_s": 0.2439,
+  "successful_requests_per_s": 4099.27,
+  "latency_ms": {
+    "p50": 3.316,
+    "p95": 7.227,
+    "p99": 9.345
+  },
+  "body_bytes": 16000,
+  "client_python": "3.12.14",
+  "platform": "Linux-6.18.44-x86_64-with-glibc2.39"
+}

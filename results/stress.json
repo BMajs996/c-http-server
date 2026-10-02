@@ -1,0 +1,26 @@
+{
+  "host": "127.0.0.1",
+  "port": 18089,
+  "path": "/health",
+  "concurrency": 32,
+  "requests": 2000,
+  "keep_alive": false,
+  "warmup": 0,
+  "completed": 2000,
+  "errors": 0,
+  "error_samples": [],
+  "elapsed_s": 0.576,
+  "successful_requests_per_s": 3472.48,
+  "latency_ms": {
+    "p50": 7.319,
+    "p95": 16.949,
+    "p99": 65.522
+  },
+  "body_bytes": 32000,
+  "client_python": "3.12.14",
+  "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+  "idle_connections": 300,
+  "slow_readers": 8,
+  "slow_path": "/large.bin",
+  "note": "Idle sockets can expire after 5 seconds; use a large slow-path file to create sustained backpressure."
+}
