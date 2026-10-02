@@ -235,9 +235,10 @@ static void write_body(connection *c) {
     if (rc < 0) c->state = CLOSING;
 }
 static void complete(connection *c) {
-    metrics_response(c->status, c->sent, 1, now_ms() - c->started);
+    int64_t elapsed=now_ms()-c->started;
+    metrics_response(c->status, c->sent, 1, elapsed);
     log_request(c->fd, c->completed + 1, c->request.target, c->request.method,
-                c->status, c->sent, now_ms() - c->started, 1);
+                c->status, c->sent, elapsed, 1);
     c->logged = 1;
     file_cache_release(c->cached);c->cached=NULL;
     if (c->file_fd >= 0) { close(c->file_fd); c->file_fd = -1; }
@@ -335,9 +336,10 @@ void connection_destroy(connection *c) {
     file_cache_release(c->cached);
     if (c->opened.fd >= 0) close(c->opened.fd);
     if (!c->logged && c->status) {
-        metrics_response(c->status, c->sent, 0, now_ms() - c->started);
+        int64_t elapsed=now_ms()-c->started;
+        metrics_response(c->status, c->sent, 0, elapsed);
         log_request(c->fd, c->completed + 1, c->request.target, c->request.method,
-                    c->status, c->sent, now_ms() - c->started, 0);
+                    c->status, c->sent, elapsed, 0);
     }
     metrics_close();
     if (c->file_fd >= 0) close(c->file_fd);

@@ -102,7 +102,9 @@ active responses pin their data until completion. Pinned and retired entries
 continue to count against the byte and entry limits. If capacity is unavailable,
 the response falls back to streaming.
 
-The byte budget includes entry metadata and content. The path hash table uses
+The byte budget includes entry metadata, each path's actual length, and content.
+Cached entries retain the response metadata they need, without unused file
+descriptor and filesystem `stat` fields. The path hash table uses
 additional memory, bounded by 8,192 pointers (64 KiB on a 64-bit host).
 Worker staging buffers are additional memory, bounded by
 `file_job_limit * cache_max_file_bytes`, plus allocator overhead. TLS also has

@@ -24,6 +24,10 @@ static void assert_absent(const char *path) {
 static void assert_present(const char *path,const char *text) {
     file_cache_entry *entry=file_cache_get(path);
     assert(entry && !strcmp(file_cache_data(entry),text));
+    struct static_file metadata=file_cache_metadata(entry);
+    assert(metadata.fd==-1 && !metadata.data);
+    assert(metadata.length==(off_t)strlen(text));
+    assert(!strcmp(metadata.type,"text/plain"));
     file_cache_release(entry);
 }
 static void assert_empty(void) {
@@ -100,6 +104,24 @@ int main(void) {
     assert(!strcmp(file_cache_data(pinned),"old"));
     assert_present("/old","replacement");
     file_cache_release(replacement);file_cache_release(pinned);
+    file_cache_close();assert_empty();
+
+    /* Short paths consume their actual length, not a fixed 2 KiB slot. */
+    config.cache_entries=8;config.cache_bytes=4096;
+    file_cache_release(insert("/a","x"));
+    file_cache_snapshot(&current);
+    uintmax_t short_cost=current.bytes;
+    char medium_path[1002];medium_path[0]='/';
+    memset(medium_path+1,'p',1000);medium_path[1001]=0;
+    file_cache_release(insert(medium_path,"x"));
+    file_cache_snapshot(&current);
+    assert(current.bytes-short_cost==short_cost+strlen(medium_path)-strlen("/a"));
+    for(int i=0;i<3;++i) {
+        char path[32];snprintf(path,sizeof path,"/s%d",i);
+        file_cache_release(insert(path,"x"));
+    }
+    file_cache_snapshot(&current);
+    assert(current.entries==5 && current.bytes<=config.cache_bytes);
     file_cache_close();assert_empty();
 
     /* Failed insertion keeps caller ownership, including oversized paths. */

@@ -40,6 +40,7 @@ class ServerTests(unittest.TestCase):
             cls.port = sock.getsockname()[1]
         cls.proc = subprocess.Popen([str(PROJECT / 'http_server'), str(cls.port), str(cls.root)],
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**os.environ, 'C_HTTP_ACCESS_LOG': '0'})
+        assert cls.proc.stdout is not None
         assert cls.proc.stdout.readline().startswith(b'Listening'), 'Server failed to start'
 
     @classmethod
@@ -264,6 +265,7 @@ class ServerTests(unittest.TestCase):
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**os.environ, 'C_HTTP_ACCESS_LOG': '0'})
         held = []
         try:
+            assert proc.stdout is not None
             self.assertTrue(proc.stdout.readline().startswith(b'Listening'))
             held = [socket.create_connection(('127.0.0.1', port), timeout=2) for _ in range(2)]
             time.sleep(.05)
@@ -353,6 +355,7 @@ class ServerTests(unittest.TestCase):
         proc=subprocess.Popen([str(PROJECT/'http_server'),str(port),str(self.root)],
             stdout=subprocess.PIPE,stderr=subprocess.PIPE,env={**os.environ,'C_HTTP_ACCESS_LOG':str(log)})
         try:
+            assert proc.stdout is not None
             self.assertTrue(proc.stdout.readline().startswith(b'Listening'))
             c=http.client.HTTPConnection('127.0.0.1',port,timeout=2)
             c.request('GET','/style.css',headers={'Connection':'close'})
@@ -372,6 +375,7 @@ class ServerTests(unittest.TestCase):
         proc=subprocess.Popen([str(PROJECT/'http_server'),str(port),str(self.root)],
             stdout=subprocess.PIPE,stderr=subprocess.PIPE,
             env={**os.environ,'C_HTTP_ACCESS_LOG':'0',**env})
+        assert proc.stdout is not None
         self.assertTrue(proc.stdout.readline().startswith(b'Listening'))
         return proc,port
 
@@ -550,6 +554,7 @@ class ServerTests(unittest.TestCase):
                     probe.bind(('127.0.0.1',0));port=probe.getsockname()[1]
                 proc=subprocess.Popen([str(PROJECT/'http_server'),str(port),str(self.root),'1024','300'],
                     stdout=subprocess.PIPE,stderr=subprocess.PIPE,env={**os.environ,'C_HTTP_ACCESS_LOG':'0'})
+                assert proc.stdout is not None
                 self.assertTrue(proc.stdout.readline().startswith(b'Listening'))
                 sock=socket.create_connection(('127.0.0.1',port));sock.setsockopt(socket.SOL_SOCKET,socket.SO_RCVBUF,4096)
                 try:
@@ -574,6 +579,7 @@ class ServerTests(unittest.TestCase):
         path.write_text(''.join(f'{key} = {value}\n' for key,value in base.items()))
         env={k:v for k,v in os.environ.items() if k!='C_HTTP_ACCESS_LOG'}
         proc=subprocess.Popen([str(PROJECT/'http_server'),'--config',str(path)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,env=env)
+        assert proc.stdout is not None
         line=proc.stdout.readline();self.assertTrue(line.startswith(b'Listening'),line)
         return proc,port
 
@@ -632,6 +638,25 @@ class ServerTests(unittest.TestCase):
             self.assertEqual(hashlib.sha256(self.request_extra(port,'/large.bin')[2]).digest(),hashlib.sha256(self.large).digest())
         finally:self.finish_extra(proc)
 
+    def test_cached_large_body_and_range_across_write_chunks(self):
+        content=bytes(range(256))*1024
+        path=self.root/'cached-large.bin';path.write_bytes(content)
+        proc,port=self.launch_config({'cache_bytes':1048576,'cache_max_file_bytes':1048576,
+                                      'cache_entries':4,'cache_ttl_ms':60000})
+        try:
+            self.assertEqual(self.request_extra(port,'/cached-large.bin')[2],content)
+            start,end=31000,180000
+            status,headers,body=self.request_extra(port,'/cached-large.bin',
+                {'Range':f'bytes={start}-{end}'})
+            self.assertEqual(status,206)
+            self.assertEqual(headers['Content-Range'],f'bytes {start}-{end}/{len(content)}')
+            self.assertEqual(body,content[start:end+1])
+            self.assertEqual(self.request_extra(port,'/cached-large.bin')[2],content)
+            values=self.metric_values(self.request_extra(port,'/metrics')[2])
+            self.assertGreaterEqual(values['c_http_cache_hits_total'],2)
+            self.assertLessEqual(values['c_http_cache_bytes'],1048576)
+        finally:self.finish_extra(proc);path.unlink()
+
     def tls_files(self):
         if os.environ.get('C_HTTP_TEST_TLS')=='0':self.skipTest('HTTP-only build')
         if not shutil.which('openssl'):self.skipTest('OpenSSL CLI unavailable for temporary test certificates')
@@ -648,11 +673,31 @@ class ServerTests(unittest.TestCase):
         proc,port=self.launch_config({'tls_cert':str(cert),'tls_key':str(key),'cache_bytes':65536})
         try:
             c=http.client.HTTPSConnection('localhost',port,context=context,timeout=5)
-            c.request('GET','/health');r=c.getresponse();self.assertEqual(r.status,200);r.read()
-            self.assertEqual(c.sock.selected_alpn_protocol(),'http/1.1')
-            c.request('GET','/style.css');r=c.getresponse();tag=r.getheader('ETag');self.assertEqual(r.read(),b'body { color: green; }')
-            c.request('GET','/style.css',headers={'Range':'bytes=0-3'});r=c.getresponse();self.assertEqual(r.status,206);self.assertEqual(r.read(),b'body')
-            c.request('GET','/style.css',headers={'If-None-Match':tag,'Connection':'close'});r=c.getresponse();self.assertEqual(r.status,304);self.assertEqual(r.read(),b'');c.close()
+            try:
+                c.request('GET','/health')
+                r=c.getresponse()
+                self.assertEqual(r.status,200)
+                r.read()
+                assert c.sock is not None
+                self.assertEqual(c.sock.selected_alpn_protocol(),'http/1.1')
+
+                c.request('GET','/style.css')
+                r=c.getresponse()
+                tag=r.getheader('ETag')
+                assert tag is not None
+                self.assertEqual(r.read(),b'body { color: green; }')
+
+                c.request('GET','/style.css',headers={'Range':'bytes=0-3'})
+                r=c.getresponse()
+                self.assertEqual(r.status,206)
+                self.assertEqual(r.read(),b'body')
+
+                c.request('GET','/style.css',headers={'If-None-Match':tag,'Connection':'close'})
+                r=c.getresponse()
+                self.assertEqual(r.status,304)
+                self.assertEqual(r.read(),b'')
+            finally:
+                c.close()
             values=self.metric_values(self.request_extra(port,'/metrics',context=context)[2])
             self.assertEqual(values['c_http_tls_enabled'],1);self.assertGreaterEqual(values['c_http_tls_handshakes_total'],2)
         finally:self.finish_extra(proc)

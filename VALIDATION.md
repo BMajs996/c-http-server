@@ -22,3 +22,10 @@
 - Fresh-connection benchmark against one cached file: three trials of 3,000 requests at concurrency 16, median 5,491 requests/s, zero errors.
 - Stress run held 100 idle connections and 8 slow readers of a 16 MiB file while completing 2,000 fresh `/health` requests at concurrency 32 with zero request errors. After the held sockets closed, metrics showed 512 cache entries using 1,357,312 bytes, below the configured limits. Eight aborted responses corresponded to the slow readers closing before their transfers finished.
 - Deterministic parser/range fuzz run passed 100,000 mutations.
+
+## Pre-Phase 3 cache memory cleanup
+
+- Cache entries now allocate only the path length they use and retain response metadata without unused file descriptor and `stat` fields. For the same 512-file working set, `c_http_cache_bytes` fell from 1,357,312 to 238,592 bytes (82.4% less counted cache memory). The hash table and allocator overhead remain outside that gauge.
+- An experimental direct-write path for cached responses did not show a reliable HTTP throughput benefit, so it was removed. The final code retains the existing response-write path.
+- Alternating old/new runs for a cached 32 KiB file, 5,000 requests per trial, concurrency 16, six trials per version: median successful throughput was 8,837 requests/s for the previous code and 8,614 requests/s for the optimized code, with high trial variance and zero errors. This benchmark does not establish a throughput improvement; the measured benefit is cache memory use.
+- Strict C11 build, cache unit tests, and all 39 HTTP/HTTPS integration tests passed. The cache unit test also passed with AddressSanitizer and UndefinedBehaviorSanitizer locally, with leak detection disabled in this runtime.

@@ -7,16 +7,21 @@
 #include <string.h>
 #include <time.h>
 
+#define CACHE_PATH_CAP 2048
+
 struct file_cache_entry {
     struct file_cache_entry *all_prev, *all_next;
     struct file_cache_entry *lru_prev, *lru_next;
     struct file_cache_entry *hash_next, **hash_prev_next;
-    struct static_file file;
-    char path[2048];
+    off_t length;
+    const char *type;
+    char etag[160], last_modified[64];
+    char *data;
     unsigned references;
     int valid;
     int64_t expires;
     size_t cost;
+    char path[];
 };
 
 /* Only valid entries appear in buckets and LRU. All entries, including retired
@@ -94,7 +99,7 @@ static void remove_entry(file_cache_entry *entry) {
     else all_entries=entry->all_next;
     if(entry->all_next)entry->all_next->all_prev=entry->all_prev;
     stats.bytes-=entry->cost;--stats.entries;
-    free(entry->file.data);free(entry);
+    free(entry->data);free(entry);
 }
 
 static void retire_entry(file_cache_entry *entry) {
@@ -119,11 +124,12 @@ file_cache_entry *file_cache_get(const char *path) {
 file_cache_entry *file_cache_insert(const char *path,struct static_file *file) {
     if(!config.cache_bytes || !file->data)return NULL;
     size_t length=strlen(path);
-    if(length>=sizeof ((file_cache_entry *)0)->path || file->length<0 ||
-       (uintmax_t)file->length>SIZE_MAX-sizeof(file_cache_entry)-1) {
+    if(length>=CACHE_PATH_CAP || file->length<0 ||
+       (uintmax_t)file->length>SIZE_MAX-sizeof(file_cache_entry)-length-2) {
         ++stats.bypasses;return NULL;
     }
-    size_t cost=sizeof(file_cache_entry)+(size_t)file->length+1;
+    size_t allocation_size=sizeof(file_cache_entry)+length+1;
+    size_t cost=allocation_size+(size_t)file->length+1;
     if(cost>config.cache_bytes || !ensure_buckets()) {
         ++stats.bypasses;return NULL;
     }
@@ -137,9 +143,12 @@ file_cache_entry *file_cache_insert(const char *path,struct static_file *file) {
         if(!victim){++stats.bypasses;return NULL;}
         remove_entry(victim);++stats.evictions;
     }
-    file_cache_entry *entry=calloc(1,sizeof *entry);
+    file_cache_entry *entry=calloc(1,allocation_size);
     if(!entry){++stats.bypasses;return NULL;}
-    entry->file=*file;entry->file.fd=-1;file->data=NULL;
+    entry->length=file->length;entry->type=file->type;
+    strcpy(entry->etag,file->etag);
+    strcpy(entry->last_modified,file->last_modified);
+    entry->data=file->data;file->data=NULL;
     memcpy(entry->path,path,length+1);
     entry->references=1;entry->valid=1;entry->cost=cost;
     entry->expires=now_ms()+config.cache_ttl_ms;
@@ -152,9 +161,14 @@ file_cache_entry *file_cache_insert(const char *path,struct static_file *file) {
 }
 
 struct static_file file_cache_metadata(const file_cache_entry *entry) {
-    struct static_file result=entry->file;result.fd=-1;result.data=NULL;return result;
+    /* stamp is used by the disk worker before insertion; cached responses
+     * only need the representation metadata below. */
+    struct static_file result={.fd=-1,.length=entry->length,.type=entry->type};
+    strcpy(result.etag,entry->etag);
+    strcpy(result.last_modified,entry->last_modified);
+    return result;
 }
-const char *file_cache_data(const file_cache_entry *entry){return entry->file.data;}
+const char *file_cache_data(const file_cache_entry *entry){return entry->data;}
 void file_cache_release(file_cache_entry *entry) {
     if(!entry)return;
     if(entry->references)--entry->references;
