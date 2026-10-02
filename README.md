@@ -102,10 +102,11 @@ active responses pin their data until completion. Pinned and retired entries
 continue to count against the byte and entry limits. If capacity is unavailable,
 the response falls back to streaming.
 
-The byte budget includes entry metadata and content. Worker staging buffers are
-additional memory, bounded by `file_job_limit * cache_max_file_bytes`, plus
-allocator overhead. TLS also has OpenSSL-managed buffers. The cache budget is
-not a cap on total process memory.
+The byte budget includes entry metadata and content. The path hash table uses
+additional memory, bounded by 8,192 pointers (64 KiB on a 64-bit host).
+Worker staging buffers are additional memory, bounded by
+`file_job_limit * cache_max_file_bytes`, plus allocator overhead. TLS also has
+OpenSSL-managed buffers. The cache budget is not a cap on total process memory.
 
 ## HTTPS
 
@@ -241,3 +242,14 @@ changes. It accepts older single-trial result files. A result with any failed
 trial exits unsuccessfully; comparison also exits unsuccessfully when errors
 are present. Run each variant more than once and alternate their order if small
 differences matter, since shared-host load can change between runs.
+
+For many-file cache measurements, create a text file with one URL path per line
+and pass `--paths-file paths.txt`. The tool cycles through these paths for warmup
+and measured requests. It records the ordered path list's SHA-256 digest and
+rejects comparisons with different path lists. Use a TTL long enough that all
+files remain fresh during a trial, and a cache entry limit large enough for the
+working set when measuring warm cache lookups.
+
+`make benchmark-cache` measures 300,000 direct warm lookups across 3,000 cache
+entries. It isolates the cache data structure from HTTP, sockets, and the Python
+client. Run it on an otherwise idle host for a useful local comparison.

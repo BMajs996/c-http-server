@@ -22,7 +22,8 @@ def percentile(values, fraction):
     return values[lower] + (values[upper] - values[lower]) * (index - lower)
 
 
-def run(host, port, path, concurrency, requests, warmup, reuse, context=None):
+def run(host, port, path, concurrency, requests, warmup, reuse, context=None, paths=None):
+    targets = paths or [path]
     def connection():
         cls = http.client.HTTPSConnection if context else http.client.HTTPConnection
         kwargs = {'timeout': 10}
@@ -31,10 +32,10 @@ def run(host, port, path, concurrency, requests, warmup, reuse, context=None):
         return cls(host, port, **kwargs)
 
     warmup_errors = []
-    for _ in range(warmup):
+    for index in range(warmup):
         client = connection()
         try:
-            client.request('GET', path, headers={'Connection': 'close'})
+            client.request('GET', targets[index % len(targets)], headers={'Connection': 'close'})
             response = client.getresponse()
             response.read()
             if response.status != 200:
@@ -44,16 +45,18 @@ def run(host, port, path, concurrency, requests, warmup, reuse, context=None):
         finally:
             client.close()
 
-    def worker(count):
+    def worker(work):
+        first, count = work
         client = None
         latencies, errors, total_bytes = [], [], 0
         try:
-            for _ in range(count):
+            for offset in range(count):
                 start = time.perf_counter()
                 try:
                     if client is None:
                         client = connection()
-                    client.request('GET', path, headers={} if reuse else {'Connection': 'close'})
+                    client.request('GET', targets[(first + offset) % len(targets)],
+                                   headers={} if reuse else {'Connection': 'close'})
                     response = client.getresponse()
                     body = response.read()
                     if response.status != 200:
@@ -76,13 +79,16 @@ def run(host, port, path, concurrency, requests, warmup, reuse, context=None):
     start = time.perf_counter()
     with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
         counts = [requests // concurrency + (i < requests % concurrency) for i in range(concurrency)]
-        results = list(pool.map(worker, counts))
+        starts = [sum(counts[:i]) for i in range(concurrency)]
+        results = list(pool.map(worker, zip(starts, counts)))
     duration = time.perf_counter() - start
     latencies = sorted(value for item in results for value in item[0])
     errors = [error for item in results for error in item[1]]
     return {
         'scheme': 'https' if context else 'http', 'host': host, 'port': port,
-        'path': path, 'concurrency': concurrency, 'requests': requests,
+        'path': path if paths is None else None,
+        'paths_sha256': hashlib.sha256(('\n'.join(targets) + '\n').encode()).hexdigest() if paths else None,
+        'path_count': len(targets), 'concurrency': concurrency, 'requests': requests,
         'keep_alive': reuse, 'warmup': warmup, 'completed': len(latencies),
         'errors': len(errors), 'error_samples': errors[:5],
         'warmup_errors': len(warmup_errors), 'warmup_error_samples': warmup_errors[:5],
@@ -110,8 +116,9 @@ def summary(trials):
 
 def workload(result):
     trial = result['trials'][0] if 'trials' in result else result
-    return {key: trial.get(key, 'http' if key == 'scheme' else None)
-            for key in ('scheme', 'host', 'port', 'path', 'concurrency', 'requests', 'keep_alive', 'warmup')}
+    return {key: trial.get(key, 'http' if key == 'scheme' else 1 if key == 'path_count' else None)
+            for key in ('scheme', 'host', 'port', 'path', 'paths_sha256', 'path_count',
+                        'concurrency', 'requests', 'keep_alive', 'warmup')}
 
 
 def normalized(result):
@@ -141,6 +148,7 @@ def main():
     parser.add_argument('--host', default='127.0.0.1')
     parser.add_argument('--port', type=int, default=8080)
     parser.add_argument('--path', default='/health')
+    parser.add_argument('--paths-file', type=Path, help='one request path per line, cycled across requests')
     parser.add_argument('--concurrency', type=int, default=16)
     parser.add_argument('--requests', type=int, default=2000)
     parser.add_argument('--warmup', type=int, default=20)
@@ -167,6 +175,12 @@ def main():
     if args.ca_file and not args.https:
         parser.error('--ca-file requires --https')
     try:
+        paths = ([line.strip() for line in args.paths_file.read_text().splitlines()
+                  if line.strip() and not line.lstrip().startswith('#')]
+                 if args.paths_file else None)
+        if paths is not None and (not paths or len(paths) > 4096 or
+                                  any(not item.startswith('/') for item in paths)):
+            parser.error('--paths-file must contain 1–4096 paths beginning with /')
         config = ({'path': str(args.config),
                    'sha256': hashlib.sha256(args.config.read_bytes()).hexdigest()}
                   if args.config else None)
@@ -176,7 +190,7 @@ def main():
     trials = []
     for number in range(args.trials):
         result = run(args.host, args.port, args.path, args.concurrency, args.requests,
-                     args.warmup, not args.fresh, context)
+                     args.warmup, not args.fresh, context, paths)
         trials.append(result)
         print(f'trial {number + 1}/{args.trials}: {result["completed"]}/{args.requests} completed, '
               f'{result["errors"]} errors, {result["successful_requests_per_s"]} req/s', file=sys.stderr)

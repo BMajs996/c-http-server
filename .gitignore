@@ -3,6 +3,7 @@
 /fuzz_parser
 /fuzz_libfuzzer
 /test_file_cache
+/cache_lookup_benchmark
 *.o
 
 # Python generated files

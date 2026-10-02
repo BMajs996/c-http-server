@@ -8,3 +8,17 @@
 - Deterministic parser/range fuzzing: 100,000 mutations passed.
 - Verified HTTPS benchmark and stress smoke runs: 100 requests each, zero errors. These are functional checks, not throughput baselines.
 - GitHub Actions workflow supplied; remote CI and Clang coverage-guided fuzzing have not been run in this session.
+
+## Phase 2: hashed file cache and LRU list
+
+- Strict C11 build and all 38 server integration tests passed, including cache, ranges, conditional requests, pipelines, HTTPS, and disconnects.
+- Expanded cache unit checks passed for many paths, LRU order, pinned eviction, expiry, replacement, capacity, and caller ownership after bypass.
+- Loopback benchmark: 512 files, 10,000 requests per trial, 16 concurrent keep-alive clients, 512 warmup requests, three trials, cache TTL 60 seconds, logging disabled. Median successful throughput changed from 8,881 to 8,973 requests/s (+1.0%), with zero errors. This small difference is within likely run-to-run variation and is not evidence of a server throughput gain.
+- Direct warm cache lookup benchmark: 300,000 lookups across 3,000 entries took 5.934 and 6.142 seconds with the previous list lookup, versus 0.034 and 0.036 seconds with the hash table. This measures lookup cost alone, not end-to-end HTTP capacity.
+
+### Extended local checks
+
+- Temporary loopback server, 512 files of about 130 bytes, cache limit 16 MiB, entry limit 1,024, TTL 60 seconds, access logging disabled. Three trials of 10,000 requests at concurrency 16 produced median throughput of 8,376 requests/s with cache off and 8,362 requests/s with cache on; all 60,000 requests succeeded. The difference is within run-to-run variation.
+- Fresh-connection benchmark against one cached file: three trials of 3,000 requests at concurrency 16, median 5,491 requests/s, zero errors.
+- Stress run held 100 idle connections and 8 slow readers of a 16 MiB file while completing 2,000 fresh `/health` requests at concurrency 32 with zero request errors. After the held sockets closed, metrics showed 512 cache entries using 1,357,312 bytes, below the configured limits. Eight aborted responses corresponded to the slow readers closing before their transfers finished.
+- Deterministic parser/range fuzz run passed 100,000 mutations.

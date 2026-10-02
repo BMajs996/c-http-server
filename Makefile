@@ -17,9 +17,9 @@ test: http_server test_file_cache
 	./test_file_cache
 	python3 tests/test_server.py
 clean:
-	rm -f http_server fuzz_parser fuzz_libfuzzer test_file_cache
+	rm -f http_server fuzz_parser fuzz_libfuzzer test_file_cache cache_lookup_benchmark
 
-.PHONY: fuzz stress benchmark
+.PHONY: fuzz stress benchmark benchmark-cache
 fuzz_parser: fuzz/fuzz_parser.c http_parser.c cache.c http_parser.h cache.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -I. fuzz/fuzz_parser.c http_parser.c cache.c -o $@
 fuzz: fuzz_parser
@@ -27,6 +27,10 @@ fuzz: fuzz_parser
 # Requires a running server at 127.0.0.1:8080.
 benchmark:
 	python3 tools/benchmark.py
+cache_lookup_benchmark: tools/cache_lookup_benchmark.c file_cache.c config.c file_cache.h config.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) -I. tools/cache_lookup_benchmark.c file_cache.c config.c -o $@
+benchmark-cache: cache_lookup_benchmark
+	./cache_lookup_benchmark
 stress:
 	python3 tools/stress.py
 # Optional coverage-guided build, requires Clang with libFuzzer.
