@@ -37,7 +37,7 @@ struct connection {
     char input[HEADER_LIMIT + 1];
     size_t input_used, scan_from, request_length;
     char output[1536], chunk[32768];
-    size_t output_length, output_offset, chunk_length, chunk_offset;
+    size_t output_length, output_offset, inline_body_start, chunk_length, chunk_offset;
     const char *body, *type, *allow;
     char *request_body;
     size_t body_used;
@@ -229,6 +229,16 @@ static void prepare(connection *c) {
     if (n < 0 || (size_t)n >= sizeof c->output) { c->state = CLOSING; return; }
     c->output_length = (size_t)n; c->output_offset = 0;
     c->remaining = c->request.head || c->status == 304 ? 0 : c->body_length;
+    c->inline_body_start = 0;
+    /* Small generated bodies fit beside the headers, avoiding a second write.
+     * Keep this buffer stable across partial writes, including TLS retries. */
+    if(c->remaining && c->body && c->file_fd<0 &&
+       c->remaining<sizeof c->output-c->output_length) {
+        c->inline_body_start=c->output_length;
+        memcpy(c->output+c->output_length,c->body,(size_t)c->remaining);
+        c->output_length+=(size_t)c->remaining;c->remaining=0;
+        c->output[c->output_length]=0;
+    }
     int64_t now = now_ms();
     if (now < 0) { c->state = CLOSING; return; }
     c->deadline = now + RESPONSE_TIMEOUT_MS;
@@ -355,7 +365,12 @@ uint32_t connection_step(connection *c) {
         case VALIDATING_REQUEST: validate(c); break;
         case PREPARING_RESPONSE: prepare(c); break;
         case WRITING_HEADERS: {
+            size_t before=c->output_offset;
             int rc = write_buffer(c, c->output, c->output_length, &c->output_offset);
+            if(c->inline_body_start && c->output_offset>c->inline_body_start) {
+                size_t start=before>c->inline_body_start?before:c->inline_body_start;
+                c->sent+=c->output_offset-start;
+            }
             if (rc < 0) c->state = CLOSING;
             else if (rc > 0) c->state = WRITING_BODY;
             break;
@@ -437,6 +452,7 @@ void connection_drain(connection *c) {
             memmove(field + length, field + old, c->output_length - at - old);
             memcpy(field, replacement, length);
             c->output_length -= old - length;
+            if(c->inline_body_start)c->inline_body_start-=old-length;
         }
     }
 }

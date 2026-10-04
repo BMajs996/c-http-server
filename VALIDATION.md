@@ -1,5 +1,13 @@
 # Validation for configuration, cache, CI, and HTTPS
 
+## Small generated response optimization
+
+- Small generated response bodies now fit beside their headers in the existing connection output buffer. This avoids a separate body write while retaining stable buffers for partial HTTP/TLS writes. Body-byte accounting excludes headers and HEAD bodies; shutdown header edits also adjust the body boundary.
+- `strace` counted 200 socket writes before and 100 after for 100 successful `/api/status` requests. This reduction applies to bodies that fit with their headers in the 1,536-byte buffer; larger bodies retain the existing chunk path.
+- Six alternating trials per build, 5,000 requests per trial, 16 concurrent keep-alive clients, 20 warmup requests, request cap 10,000, and access logging disabled: all 60,000 measured requests succeeded. Median throughput changed from 10,323 to 10,670 requests/s (+3.4%). This small loopback difference may include run-to-run variation; the reliable measured benefit is fewer socket writes.
+- Strict build, all 50 HTTP/HTTPS integration tests, cache unit tests, and both precompression-tool tests passed. Access logging checks verify exact body-byte counts for a combined health response and zero body bytes for HEAD.
+- An isolated HTTP server with a temporary `LD_PRELOAD` send wrapper capped every successful write at seven bytes and returned EAGAIN every third call. GET, HEAD, small echo, larger echo, and API error responses matched their expected bytes; access logs recorded exact body lengths and completion for all five requests.
+
 ## Phase 5: routing and JSON APIs
 
 - Method/path dispatch now covers health, metrics, API status, and JSON echo before static fallback. API errors use JSON with stable codes and route-specific Allow headers.

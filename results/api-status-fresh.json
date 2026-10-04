@@ -1,0 +1,156 @@
+{
+  "format_version": 2,
+  "label": null,
+  "timestamp_utc": "2026-10-04T16:50:28.898873+00:00",
+  "environment": {
+    "python": "3.14.4",
+    "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.43",
+    "machine": "x86_64",
+    "processor_count": 12
+  },
+  "config": null,
+  "trials": [
+    {
+      "scheme": "http",
+      "host": "127.0.0.1",
+      "port": 8080,
+      "path": "/api/status",
+      "paths_sha256": null,
+      "path_count": 1,
+      "concurrency": 16,
+      "requests": 10000,
+      "keep_alive": false,
+      "warmup": 100,
+      "accept_encoding": null,
+      "completed": 10000,
+      "errors": 0,
+      "error_samples": [],
+      "warmup_errors": 0,
+      "warmup_error_samples": [],
+      "elapsed_s": 1.4887,
+      "successful_requests_per_s": 6717.49,
+      "latency_ms": {
+        "p50": 2.204,
+        "p95": 4.129,
+        "p99": 5.409
+      },
+      "body_bytes": 160000
+    },
+    {
+      "scheme": "http",
+      "host": "127.0.0.1",
+      "port": 8080,
+      "path": "/api/status",
+      "paths_sha256": null,
+      "path_count": 1,
+      "concurrency": 16,
+      "requests": 10000,
+      "keep_alive": false,
+      "warmup": 100,
+      "accept_encoding": null,
+      "completed": 10000,
+      "errors": 0,
+      "error_samples": [],
+      "warmup_errors": 0,
+      "warmup_error_samples": [],
+      "elapsed_s": 1.4942,
+      "successful_requests_per_s": 6692.63,
+      "latency_ms": {
+        "p50": 2.215,
+        "p95": 4.201,
+        "p99": 5.515
+      },
+      "body_bytes": 160000
+    },
+    {
+      "scheme": "http",
+      "host": "127.0.0.1",
+      "port": 8080,
+      "path": "/api/status",
+      "paths_sha256": null,
+      "path_count": 1,
+      "concurrency": 16,
+      "requests": 10000,
+      "keep_alive": false,
+      "warmup": 100,
+      "accept_encoding": null,
+      "completed": 10000,
+      "errors": 0,
+      "error_samples": [],
+      "warmup_errors": 0,
+      "warmup_error_samples": [],
+      "elapsed_s": 1.5509,
+      "successful_requests_per_s": 6447.74,
+      "latency_ms": {
+        "p50": 2.254,
+        "p95": 4.484,
+        "p99": 6.235
+      },
+      "body_bytes": 160000
+    },
+    {
+      "scheme": "http",
+      "host": "127.0.0.1",
+      "port": 8080,
+      "path": "/api/status",
+      "paths_sha256": null,
+      "path_count": 1,
+      "concurrency": 16,
+      "requests": 10000,
+      "keep_alive": false,
+      "warmup": 100,
+      "accept_encoding": null,
+      "completed": 10000,
+      "errors": 0,
+      "error_samples": [],
+      "warmup_errors": 0,
+      "warmup_error_samples": [],
+      "elapsed_s": 1.4765,
+      "successful_requests_per_s": 6772.9,
+      "latency_ms": {
+        "p50": 2.198,
+        "p95": 4.07,
+        "p99": 5.166
+      },
+      "body_bytes": 160000
+    },
+    {
+      "scheme": "http",
+      "host": "127.0.0.1",
+      "port": 8080,
+      "path": "/api/status",
+      "paths_sha256": null,
+      "path_count": 1,
+      "concurrency": 16,
+      "requests": 10000,
+      "keep_alive": false,
+      "warmup": 100,
+      "accept_encoding": null,
+      "completed": 10000,
+      "errors": 0,
+      "error_samples": [],
+      "warmup_errors": 0,
+      "warmup_error_samples": [],
+      "elapsed_s": 1.4692,
+      "successful_requests_per_s": 6806.45,
+      "latency_ms": {
+        "p50": 2.201,
+        "p95": 4.044,
+        "p99": 4.944
+      },
+      "body_bytes": 160000
+    }
+  ],
+  "summary": {
+    "trials": 5,
+    "valid_trials": 5,
+    "completed": 50000,
+    "errors": 0,
+    "median": {
+      "successful_requests_per_s": 6717.49,
+      "latency_ms.p50": 2.204,
+      "latency_ms.p95": 4.129,
+      "latency_ms.p99": 5.409
+    }
+  }
+}

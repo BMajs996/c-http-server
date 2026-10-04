@@ -466,10 +466,16 @@ class ServerTests(unittest.TestCase):
             self.assertTrue(proc.stdout.readline().startswith(b'Listening'))
             c=http.client.HTTPConnection('127.0.0.1',port,timeout=2)
             c.request('GET','/style.css',headers={'Connection':'close'})
-            r=c.getresponse();r.read();c.close();time.sleep(.05)
+            r=c.getresponse();r.read();c.close()
+            for method in ['GET','HEAD']:
+                c.request(method,'/health',headers={'Connection':'close'})
+                r=c.getresponse();self.assertEqual(r.status,200);r.read();c.close()
+            time.sleep(.05)
         finally:proc.terminate();proc.communicate(timeout=2)
         records=[json.loads(line) for line in log.read_text().splitlines()]
-        self.assertEqual(len(records),1)
+        self.assertEqual(len(records),3)
+        self.assertEqual(records[1]['body_bytes_sent'],len(b'{"status":"ok"}\n'))
+        self.assertEqual(records[2]['body_bytes_sent'],0)
         self.assertEqual(records[0]['status'],200)
         self.assertEqual(records[0]['method'],'GET')
         self.assertEqual(records[0]['body_bytes_sent'],len(b'body { color: green; }'))
