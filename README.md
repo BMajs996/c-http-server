@@ -64,6 +64,15 @@ certificate/key pair fail startup. Configuration is loaded once at startup.
 for client sockets, open files, and the reactor. Connection counts and queues
 are bounded independently; raising them also raises possible memory use.
 
+## Project layout
+
+- `src/`: application C sources.
+- `include/`: application headers.
+- `tests/`: integration tests and C cache tests.
+- `fuzz/`: parser, range, and JSON fuzzing.
+- `tools/`: benchmarks, stress tests, and asset preparation.
+- `public/`: static assets.
+
 ## HTTP and static files
 
 GET and HEAD serve regular files. Directories select `index.html`; query
@@ -174,7 +183,7 @@ Logging gets a bounded final flush.
 
 ## Routing and JSON APIs
 
-A method/path table in `router.c` dispatches built-in handlers before static-file
+A method/path table in `src/router.c` dispatches built-in handlers before static-file
 fallback. Route paths are case sensitive and matched literally without query
 strings; percent-encoded aliases and trailing slashes do not match API routes.
 The `/api` namespace is reserved: unknown paths return JSON 404 errors.
@@ -199,7 +208,7 @@ convert numeric values or normalize Unicode escapes. `Content-Type` must be
 `application/json` (parameters are ignored); content encoding must be absent or
 `identity`. Other media types or compressed request bodies return 415.
 
-Bodies have a fixed 16 KiB limit (`BODY_LIMIT` in `http_parser.h`). Only echo
+Bodies have a fixed 16 KiB limit (`BODY_LIMIT` in `include/http_parser.h`). Only echo
 accepts nonempty bodies. The server allocates exactly the declared body length
 for accepted requests and releases it after the response or connection teardown.
 Without Content-Length, the body is empty and echo returns 400. Reads are
