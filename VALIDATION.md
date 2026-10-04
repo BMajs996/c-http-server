@@ -1,5 +1,13 @@
 # Validation for configuration, cache, CI, and HTTPS
 
+## Phase 4: precompressed gzip assets
+
+- Strict TLS-enabled build, all 44 HTTP/HTTPS integration tests, cache unit tests, and two asset-tool tests passed. Coverage includes negotiation, validators, HEAD, ranges, mixed pipelines, cache variants, expiry, sidecar updates, missing/stale/unsafe sidecars, and verified HTTPS.
+- Parser/range fuzzing passed 100,000 mutations with encoding quality invariants.
+- AddressSanitizer and UndefinedBehaviorSanitizer checks passed for 100,000 parser/range mutations and cache unit tests, with local leak detection disabled. The strict HTTP-only build also passed.
+- A synthetic repeated-text asset shrank from 64,000 bytes to a 280-byte gzip sidecar (99.56%). With cache enabled, concurrency 16, three trials of 2,000 requests per representation, and logging disabled, all 12,000 requests succeeded. Median throughput was 8,400 requests/s for identity and 8,552 for gzip. This small throughput difference does not establish a speed improvement; the payload reduction depends heavily on this repetitive fixture.
+- Runtime sidecar validation checks file type, freshness, and magic bytes. Full decompression and content verification happen in the offline tool; deployments must publish coherent originals and sidecars.
+
 - GCC strict C11 build with warnings treated as errors passed.
 - TLS-enabled integration suite: 38 tests, 37 passed and one optional process-descriptor check skipped because this runtime does not expose the descriptor table.
 - AddressSanitizer and UndefinedBehaviorSanitizer: same integration suite passed; the cache ownership unit test also passed with instrumentation. Leak detection was disabled locally because this runtime lacks the required process access. CI enables leak detection on Ubuntu.

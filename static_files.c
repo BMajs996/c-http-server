@@ -63,67 +63,82 @@ static int error_status(int error) {
     return 500;
 }
 
-int prepare_static(int root_fd, const char *target, struct static_file *file) {
+int prepare_static(int root_fd,const char *target,int gzip_q,int identity_q,struct static_file *file) {
     char path[2048];
-    int status = decode_path(target, path, sizeof path);
-    if (status) return status;
-    int current = dup(root_fd);
-    if (current < 0) return 500;
-    char *component = path;
-    const char *filename = "index.html";
-    /* Walk relative to already opened directories, never concatenate a root
-     * with user input. O_NOFOLLOW rejects symlinks at every component.
-     */
-    while (*component) {
-        char *slash = strchr(component, '/');
-        if (slash) *slash = '\0';
-        if (*component == '.' || !*component) {
-            close(current); return 403;
-        }
-        int flags = O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK;
-        if (slash) flags |= O_DIRECTORY;
-        int next = openat(current, component, flags);
-        if (next < 0) {
-            status = error_status(errno);
-            close(current); return status;
-        }
-        close(current);
-        current = next;
-        filename = component;
-        if (!slash) break;
-        component = slash + 1;
+    int status=decode_path(target,path,sizeof path);
+    if(status)return status;
+    int current=dup(root_fd),parent=-1;
+    if(current<0)return 500;
+    char *component=path;
+    const char *filename="index.html";
+    while(*component) {
+        char *slash=strchr(component,'/');
+        if(slash)*slash=0;
+        if(*component=='.' || !*component){status=403;goto failed;}
+        int flags=O_RDONLY|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK;
+        if(slash)flags|=O_DIRECTORY;
+        int next=openat(current,component,flags);
+        if(next<0){status=error_status(errno);goto failed;}
+        if(slash)close(current);
+        else parent=current;
+        current=next;filename=component;
+        if(!slash)break;
+        component=slash+1;
     }
-    struct stat metadata;
-    if (fstat(current, &metadata) < 0) {
-        close(current); return 500;
+    struct stat source,metadata;
+    if(fstat(current,&source)<0){status=500;goto failed;}
+    if(S_ISDIR(source.st_mode)) {
+        if(parent>=0)close(parent);
+        parent=current;
+        current=openat(parent,"index.html",O_RDONLY|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK);
+        if(current<0){status=error_status(errno);goto failed;}
+        filename="index.html";
+        if(fstat(current,&source)<0){status=500;goto failed;}
     }
-    if (S_ISDIR(metadata.st_mode)) {
-        int index = openat(current, "index.html", O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
-        if (index < 0) {
-            status = error_status(errno);
-            close(current); return status;
+    if(!S_ISREG(source.st_mode) || source.st_size<0){status=403;goto failed;}
+    metadata=source;file->gzip=0;
+    if(gzip_q>0 && gzip_q>=identity_q) {
+        char sidecar[2052];
+        int n=snprintf(sidecar,sizeof sidecar,"%s.gz",filename);
+        int compressed=n>0 && (size_t)n<sizeof sidecar?
+            openat(parent,sidecar,O_RDONLY|O_CLOEXEC|O_NOFOLLOW|O_NONBLOCK):-1;
+        if(compressed>=0) {
+            struct stat stamp;
+            if(fstat(compressed,&stamp)<0){close(compressed);status=500;goto failed;}
+            unsigned char magic[2];
+            int fresh=stamp.st_mtim.tv_sec>source.st_mtim.tv_sec ||
+                (stamp.st_mtim.tv_sec==source.st_mtim.tv_sec && stamp.st_mtim.tv_nsec>=source.st_mtim.tv_nsec);
+            ssize_t count=0;
+            if(S_ISREG(stamp.st_mode) && stamp.st_size>=2 && fresh) {
+                do count=pread(compressed,magic,2,0); while(count<0 && errno==EINTR);
+                if(count<0){close(compressed);status=500;goto failed;}
+            }
+            if(count==2 && magic[0]==0x1f && magic[1]==0x8b) {
+                close(current);current=compressed;metadata=stamp;file->gzip=1;
+            } else close(compressed);
+        } else if(n>0 && (size_t)n<sizeof sidecar && errno!=ENOENT && errno!=ENOTDIR &&
+                  errno!=ELOOP && errno!=EACCES && errno!=EPERM && errno!=ENAMETOOLONG) {
+            status=error_status(errno);goto failed;
         }
-        close(current); current = index; filename = "index.html";
-        if (fstat(current, &metadata) < 0) {
-            close(current); return 500;
-        }
     }
-    if (!S_ISREG(metadata.st_mode) || metadata.st_size < 0) {
-        close(current); return 403;
-    }
-    int n = snprintf(file->etag, sizeof file->etag, "W/\"%jx-%jx-%jx-%jx-%jx\"",
-        (uintmax_t)metadata.st_dev, (uintmax_t)metadata.st_ino,
-        (uintmax_t)metadata.st_size, (uintmax_t)metadata.st_mtim.tv_sec,
-        (uintmax_t)metadata.st_mtim.tv_nsec);
+    if(!file->gzip && !identity_q){status=406;goto failed;}
+    int n=snprintf(file->etag,sizeof file->etag,
+        "W/\"%s-%jx-%jx-%jx-%jx-%jx-%jx-%jx-%jx-%jx-%jx\"",
+        file->gzip?"gzip":"identity",(uintmax_t)metadata.st_dev,(uintmax_t)metadata.st_ino,
+        (uintmax_t)metadata.st_size,(uintmax_t)metadata.st_mtim.tv_sec,(uintmax_t)metadata.st_mtim.tv_nsec,
+        (uintmax_t)source.st_dev,(uintmax_t)source.st_ino,(uintmax_t)source.st_size,
+        (uintmax_t)source.st_mtim.tv_sec,(uintmax_t)source.st_mtim.tv_nsec);
     struct tm utc;
-    if (n < 0 || (size_t)n >= sizeof file->etag ||
-        !gmtime_r(&metadata.st_mtime, &utc) ||
-        !strftime(file->last_modified, sizeof file->last_modified, "%a, %d %b %Y %H:%M:%S GMT", &utc)) {
-        close(current); return 500;
+    if(n<0 || (size_t)n>=sizeof file->etag || !gmtime_r(&metadata.st_mtime,&utc) ||
+       !strftime(file->last_modified,sizeof file->last_modified,"%a, %d %b %Y %H:%M:%S GMT",&utc)) {
+        status=500;goto failed;
     }
-    file->data = NULL; file->stamp = metadata;
-    file->fd = current;
-    file->length = metadata.st_size;
-    file->type = mime_type(filename);
+    close(parent);
+    file->data=NULL;file->stamp=metadata;file->fd=current;
+    file->length=metadata.st_size;file->type=mime_type(filename);
     return 0;
+failed:
+    if(current>=0)close(current);
+    if(parent>=0)close(parent);
+    return status;
 }

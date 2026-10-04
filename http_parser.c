@@ -26,6 +26,48 @@ static int connection_tokens(char *value, int *close_requested, int *keep_reques
         value = next;
     }
 }
+/* Combine repeated codings conservatively: their lowest quality wins. */
+static int encoding_preferences(char *value,int *gzip,int *identity,int *wildcard) {
+    char *p=value;
+    while(*p) {
+        while(*p==' ' || *p=='\t' || *p==',')++p;
+        if(!*p)break;
+        char *name=p;
+        while(*p && token((unsigned char)*p))++p;
+        if(p==name)return 400;
+        size_t length=(size_t)(p-name);
+        while(*p==' ' || *p=='\t')++p;
+        int quality=1000;
+        if(*p==';') {
+            ++p;while(*p==' ' || *p=='\t')++p;
+            if(*p!='q' && *p!='Q')return 400;
+            ++p;while(*p==' ' || *p=='\t')++p;
+            if(*p++!='=')return 400;
+            while(*p==' ' || *p=='\t')++p;
+            if(*p!='0' && *p!='1')return 400;
+            int whole=*p++-'0',fraction=0,digits=0;
+            if(*p=='.') {
+                ++p;
+                while(*p>='0' && *p<='9') {
+                    if(++digits>3)return 400;
+                    fraction=fraction*10+(*p++-'0');
+                }
+            }
+            if(whole && fraction)return 400;
+            while(digits++<3)fraction*=10;
+            quality=whole*1000+fraction;
+            while(*p==' ' || *p=='\t')++p;
+        }
+        if(*p && *p!=',')return 400;
+        int *selected=NULL;
+        if(length==4 && !strncasecmp(name,"gzip",4))selected=gzip;
+        else if(length==8 && !strncasecmp(name,"identity",8))selected=identity;
+        else if(length==1 && *name=='*')selected=wildcard;
+        if(selected && (*selected<0 || quality<*selected))*selected=quality;
+        if(*p)++p;
+    }
+    return 0;
+}
 int parse_request(const char *data, size_t length, struct http_request *r) {
     char text[HEADER_LIMIT + 1];
     if (length < 4 || length > HEADER_LIMIT || memchr(data, 0, length)) return 400;
@@ -56,6 +98,7 @@ int parse_request(const char *data, size_t length, struct http_request *r) {
     if (!r->http11 && strcmp(version, "HTTP/1.0")) return 505;
     int hosts = 0, lengths = 0, close_requested = 0, keep_requested = 0;
     int transfer = 0, expect = 0;
+    int gzip=-1,identity=-1,wildcard=-1;
     uint64_t content_length = 0;
     char *line = end + 2;
     while (*line) {
@@ -114,6 +157,8 @@ int parse_request(const char *data, size_t length, struct http_request *r) {
             if (!add || old + add + 2 >= sizeof r->if_none_match) return 431;
             if (old) strcat(r->if_none_match, ",");
             strcat(r->if_none_match, value);
+        } else if (!strcasecmp(line, "Accept-Encoding")) {
+            if(encoding_preferences(value,&gzip,&identity,&wildcard))return 400;
         } else if (!strcasecmp(line, "Range")) {
             if (*r->range || !*value) return 400;
             if (strlen(value) >= sizeof r->range) return 431;
@@ -137,6 +182,8 @@ int parse_request(const char *data, size_t length, struct http_request *r) {
     if (transfer) return 501;
     if (expect) return 417;
     if (content_length) return 413;
+    r->gzip_q=gzip>=0?gzip:wildcard>=0?wildcard:0;
+    r->identity_q=identity>=0?identity:wildcard==0?0:1000;
     r->keep_alive = !close_requested && (r->http11 || keep_requested);
     return 0;
 }

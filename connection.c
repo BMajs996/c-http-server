@@ -35,7 +35,7 @@ struct connection {
     struct http_request request;
     char input[HEADER_LIMIT + 1];
     size_t input_used, scan_from, request_length;
-    char output[1024], chunk[32768];
+    char output[1536], chunk[32768];
     size_t output_length, output_offset, chunk_length, chunk_offset;
     const char *body, *type;
     uintmax_t body_length, remaining;
@@ -46,7 +46,7 @@ struct connection {
     int64_t started;
     uintmax_t sent;
     int logged;
-    char extra_headers[512];
+    char extra_headers[768];
     io_job *job;
     struct static_file opened;
     int open_ready;
@@ -73,6 +73,7 @@ static const char *reason(int status) {
     case 403: return "Forbidden";
     case 404: return "Not Found";
     case 405: return "Method Not Allowed";
+    case 406: return "Not Acceptable";
     case 408: return "Request Timeout";
     case 413: return "Content Too Large";
     case 414: return "URI Too Long";
@@ -141,11 +142,13 @@ static void prepare(connection *c) {
             }
         } else {
             if (!c->open_ready) {
-                c->cached=file_cache_get(c->request.target);
+                int gzip=c->request.gzip_q>0 && c->request.gzip_q>=c->request.identity_q;
+                c->cached=(gzip || c->request.identity_q>0)?
+                    file_cache_get_variant(c->request.target,gzip):NULL;
                 if(c->cached){c->opened=file_cache_metadata(c->cached);c->open_ready=1;}
             }
             if (!c->open_ready) {
-                c->job = file_io_open(c, c->root_fd, c->request.target);
+                c->job = file_io_open(c, c->root_fd, c->request.target, c->request.gzip_q, c->request.identity_q);
                 c->state = WAIT_FILE_OPEN;
                 c->interest = CONNECTION_WAIT_IO;
                 return;
@@ -158,17 +161,20 @@ static void prepare(connection *c) {
                 free(file.data);file.data=NULL;
                 if(c->cached){close(file.fd);file.fd=-1;}
             }
-            if (status) error_response(c, status);
-            else {
+            if (status) {
+                error_response(c,status);
+                if(status==406)strcpy(c->extra_headers,"Vary: Accept-Encoding\r\n");
+            } else {
                 c->status = 200; c->file_fd = file.fd;
                 c->body_length = (uintmax_t)file.length; c->type = file.type;
                 int n = snprintf(c->extra_headers, sizeof c->extra_headers,
-                    "ETag: %s\r\nLast-Modified: %s\r\nCache-Control: no-cache\r\nAccept-Ranges: bytes\r\n",
-                    file.etag, file.last_modified);
+                    "ETag: %s\r\nLast-Modified: %s\r\nCache-Control: no-cache\r\nVary: Accept-Encoding\r\nAccept-Ranges: %s\r\n%s",
+                    file.etag, file.last_modified,file.gzip?"none":"bytes",
+                    file.gzip?"Content-Encoding: gzip\r\n":"");
                 if (n < 0 || (size_t)n >= sizeof c->extra_headers) { c->state = CLOSING; return; }
                 if (*c->request.if_none_match && etag_matches(c->request.if_none_match, file.etag)) {
                     c->status = 304;
-                } else if (!c->request.head && *c->request.range && !*c->request.if_range) {
+                } else if (!file.gzip && !c->request.head && *c->request.range && !*c->request.if_range) {
                     /* Our metadata ETag is weak; If-Range cannot safely use it.
                      * Conservatively return the full representation whenever
                      * If-Range is supplied, including date validators. */
@@ -331,7 +337,7 @@ uint32_t connection_step(connection *c) {
         case WRITING_BODY: write_body(c); break;
         case RESPONSE_COMPLETE: complete(c); break;
         case WAIT_FILE_OPEN:
-            if (!c->job) c->job = file_io_open(c, c->root_fd, c->request.target);
+            if (!c->job) c->job = file_io_open(c, c->root_fd, c->request.target, c->request.gzip_q, c->request.identity_q);
             c->interest = CONNECTION_WAIT_IO; break;
         case WAIT_FILE_READ:
             if (!c->job) {

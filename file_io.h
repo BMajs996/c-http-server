@@ -7,7 +7,7 @@
 typedef struct io_job {
     struct io_job *next;
     void *owner; /* Reactor-only: workers never dereference or modify owner. */
-    int kind, source_fd, status;
+    int kind, source_fd, status, gzip_q, identity_q;
     off_t offset;
     size_t length;
     char target[2048], data[32768];
@@ -18,7 +18,7 @@ struct file_io_stats { unsigned outstanding, queued, running, completed_pending,
 void file_io_snapshot(struct file_io_stats *stats);
 int file_io_init(void);
 int file_io_eventfd(void);
-io_job *file_io_open(void *owner, int root, const char *target);
+io_job *file_io_open(void *owner, int root, const char *target, int gzip_q, int identity_q);
 io_job *file_io_read(void *owner, int fd, off_t offset, size_t length);
 /* Reactor consumes completion wakeup then drains results. */
 void file_io_ack(void);

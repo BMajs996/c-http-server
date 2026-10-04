@@ -16,6 +16,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         assert(a.target[0] == '/' && !strcmp(a.target, b.target));
         assert(a.method[0] && a.keep_alive == b.keep_alive);
         assert(a.head == 0 || a.head == 1);
+        assert(a.gzip_q>=0 && a.gzip_q<=1000 && a.identity_q>=0 && a.identity_q<=1000);
+        assert(a.gzip_q==b.gzip_q && a.identity_q==b.identity_q);
     }
     char value[256];
     size_t length = size < sizeof value - 1 ? size : sizeof value - 1;
@@ -44,6 +46,8 @@ int main(int argc, char **argv) {
         "GET / HTTP/1.1\r\nHost: a\r\nContent-Length: 0\r\n\r\n",
         "GET / HTTP/1.1\r\nHost: a\r\nRange: bytes=0-10\r\nIf-None-Match: W/\"abc\"\r\n\r\n",
         "GET / HTTP/1.1\r\nHost: [::1]:80\r\nTransfer-Encoding: chunked\r\n\r\n",
+        "GET / HTTP/1.1\r\nHost: a\r\nAccept-Encoding: gzip;q=1, identity;q=0.5\r\n\r\n",
+        "GET / HTTP/1.1\r\nHost: a\r\nAccept-Encoding: *;q=0\r\nAccept-Encoding: gzip;q=0.7\r\n\r\n",
         "bytes=0-4095", "bytes=-20", "bytes=18446744073709551615-"
     };
     uint8_t data[HEADER_LIMIT + 32];

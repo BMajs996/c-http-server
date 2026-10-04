@@ -15,10 +15,10 @@ struct file_cache_entry {
     struct file_cache_entry *hash_next, **hash_prev_next;
     off_t length;
     const char *type;
-    char etag[160], last_modified[64];
+    char etag[256], last_modified[64];
     char *data;
     unsigned references;
-    int valid;
+    int valid, gzip;
     int64_t expires;
     size_t cost;
     char path[];
@@ -37,12 +37,12 @@ static int64_t now_ms(void) {
     return (int64_t)t.tv_sec*1000+t.tv_nsec/1000000;
 }
 
-static size_t bucket_for(const char *path) {
+static size_t bucket_for(const char *path,int gzip) {
     uint64_t hash=UINT64_C(14695981039346656037);
     for(const unsigned char *p=(const unsigned char *)path;*p;++p) {
         hash^=*p;hash*=UINT64_C(1099511628211);
     }
-    return (size_t)hash&(bucket_count-1);
+    return (size_t)(hash^(uint64_t)gzip)&(bucket_count-1);
 }
 
 static int ensure_buckets(void) {
@@ -79,17 +79,17 @@ static void hash_unlink(file_cache_entry *entry) {
 }
 
 static void hash_insert(file_cache_entry *entry) {
-    file_cache_entry **head=&buckets[bucket_for(entry->path)];
+    file_cache_entry **head=&buckets[bucket_for(entry->path,entry->gzip)];
     entry->hash_next=*head;
     entry->hash_prev_next=head;
     if(*head)(*head)->hash_prev_next=&entry->hash_next;
     *head=entry;
 }
 
-static file_cache_entry *find_valid(const char *path) {
+static file_cache_entry *find_valid(const char *path,int gzip) {
     if(!buckets)return NULL;
-    for(file_cache_entry *entry=buckets[bucket_for(path)];entry;entry=entry->hash_next)
-        if(!strcmp(entry->path,path))return entry;
+    for(file_cache_entry *entry=buckets[bucket_for(path,gzip)];entry;entry=entry->hash_next)
+        if(entry->gzip==gzip && !strcmp(entry->path,path))return entry;
     return NULL;
 }
 
@@ -108,8 +108,11 @@ static void retire_entry(file_cache_entry *entry) {
 }
 
 file_cache_entry *file_cache_get(const char *path) {
+    return file_cache_get_variant(path,0);
+}
+file_cache_entry *file_cache_get_variant(const char *path,int gzip) {
     if(!config.cache_bytes)return NULL;
-    file_cache_entry *entry=find_valid(path);
+    file_cache_entry *entry=find_valid(path,gzip);
     if(entry) {
         if(now_ms()>=entry->expires) {
             ++stats.expirations;retire_entry(entry);
@@ -135,7 +138,7 @@ file_cache_entry *file_cache_insert(const char *path,struct static_file *file) {
     }
     /* The latest completed load replaces the visible entry. A pinned old
      * entry remains owned and counted, but is no longer discoverable. */
-    file_cache_entry *old=find_valid(path);
+    file_cache_entry *old=find_valid(path,file->gzip);
     if(old)retire_entry(old);
     while(stats.bytes>config.cache_bytes-cost || stats.entries>=config.cache_entries) {
         file_cache_entry *victim=lru_last;
@@ -145,7 +148,7 @@ file_cache_entry *file_cache_insert(const char *path,struct static_file *file) {
     }
     file_cache_entry *entry=calloc(1,allocation_size);
     if(!entry){++stats.bypasses;return NULL;}
-    entry->length=file->length;entry->type=file->type;
+    entry->gzip=file->gzip;entry->length=file->length;entry->type=file->type;
     strcpy(entry->etag,file->etag);
     strcpy(entry->last_modified,file->last_modified);
     entry->data=file->data;file->data=NULL;
@@ -163,7 +166,7 @@ file_cache_entry *file_cache_insert(const char *path,struct static_file *file) {
 struct static_file file_cache_metadata(const file_cache_entry *entry) {
     /* stamp is used by the disk worker before insertion; cached responses
      * only need the representation metadata below. */
-    struct static_file result={.fd=-1,.length=entry->length,.type=entry->type};
+    struct static_file result={.fd=-1,.gzip=entry->gzip,.length=entry->length,.type=entry->type};
     strcpy(result.etag,entry->etag);
     strcpy(result.last_modified,entry->last_modified);
     return result;

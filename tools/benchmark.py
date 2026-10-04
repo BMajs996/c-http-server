@@ -4,6 +4,7 @@ import concurrent.futures
 import hashlib
 import http.client
 import json
+import os
 import platform
 import ssl
 import statistics
@@ -22,8 +23,9 @@ def percentile(values, fraction):
     return values[lower] + (values[upper] - values[lower]) * (index - lower)
 
 
-def run(host, port, path, concurrency, requests, warmup, reuse, context=None, paths=None):
+def run(host, port, path, concurrency, requests, warmup, reuse, context=None, paths=None, accept_encoding=None):
     targets = paths or [path]
+    headers = {"Accept-Encoding": accept_encoding} if accept_encoding is not None else {}
     def connection():
         cls = http.client.HTTPSConnection if context else http.client.HTTPConnection
         kwargs = {'timeout': 10}
@@ -35,7 +37,7 @@ def run(host, port, path, concurrency, requests, warmup, reuse, context=None, pa
     for index in range(warmup):
         client = connection()
         try:
-            client.request('GET', targets[index % len(targets)], headers={'Connection': 'close'})
+            client.request('GET', targets[index % len(targets)], headers={**headers, 'Connection': 'close'})
             response = client.getresponse()
             response.read()
             if response.status != 200:
@@ -56,7 +58,7 @@ def run(host, port, path, concurrency, requests, warmup, reuse, context=None, pa
                     if client is None:
                         client = connection()
                     client.request('GET', targets[(first + offset) % len(targets)],
-                                   headers={} if reuse else {'Connection': 'close'})
+                                   headers=headers if reuse else {**headers, 'Connection': 'close'})
                     response = client.getresponse()
                     body = response.read()
                     if response.status != 200:
@@ -89,7 +91,7 @@ def run(host, port, path, concurrency, requests, warmup, reuse, context=None, pa
         'path': path if paths is None else None,
         'paths_sha256': hashlib.sha256(('\n'.join(targets) + '\n').encode()).hexdigest() if paths else None,
         'path_count': len(targets), 'concurrency': concurrency, 'requests': requests,
-        'keep_alive': reuse, 'warmup': warmup, 'completed': len(latencies),
+        'keep_alive': reuse, 'warmup': warmup, 'accept_encoding': accept_encoding, 'completed': len(latencies),
         'errors': len(errors), 'error_samples': errors[:5],
         'warmup_errors': len(warmup_errors), 'warmup_error_samples': warmup_errors[:5],
         'elapsed_s': round(duration, 4),
@@ -118,7 +120,7 @@ def workload(result):
     trial = result['trials'][0] if 'trials' in result else result
     return {key: trial.get(key, 'http' if key == 'scheme' else 1 if key == 'path_count' else None)
             for key in ('scheme', 'host', 'port', 'path', 'paths_sha256', 'path_count',
-                        'concurrency', 'requests', 'keep_alive', 'warmup')}
+                        'concurrency', 'requests', 'keep_alive', 'warmup', 'accept_encoding')}
 
 
 def normalized(result):
@@ -156,6 +158,7 @@ def main():
     parser.add_argument('--https', action='store_true')
     parser.add_argument('--ca-file', type=Path)
     parser.add_argument('--fresh', action='store_true')
+    parser.add_argument('--accept-encoding', help='recorded Accept-Encoding request header')
     parser.add_argument('--output', type=Path)
     parser.add_argument('--config', type=Path, help='server configuration to record, including its SHA-256')
     parser.add_argument('--label', help='descriptive run label, such as cache-on')
@@ -190,14 +193,14 @@ def main():
     trials = []
     for number in range(args.trials):
         result = run(args.host, args.port, args.path, args.concurrency, args.requests,
-                     args.warmup, not args.fresh, context, paths)
+                     args.warmup, not args.fresh, context, paths, args.accept_encoding)
         trials.append(result)
         print(f'trial {number + 1}/{args.trials}: {result["completed"]}/{args.requests} completed, '
               f'{result["errors"]} errors, {result["successful_requests_per_s"]} req/s', file=sys.stderr)
     record = {
         'format_version': 2, 'label': args.label, 'timestamp_utc': datetime.now(timezone.utc).isoformat(),
         'environment': {'python': platform.python_version(), 'platform': platform.platform(),
-                        'machine': platform.machine(), 'processor_count': __import__('os').cpu_count()},
+                        'machine': platform.machine(), 'processor_count': os.cpu_count()},
         'config': config, 'trials': trials, 'summary': summary(trials),
     }
     output = json.dumps(record, indent=2) + '\n'

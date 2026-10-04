@@ -45,7 +45,7 @@ static void *worker(void *unused) {
             (void)nanosleep(&delay, NULL);
         }
         if (job->kind == 0) {
-            job->status = prepare_static(job->source_fd, job->target, &job->file);
+            job->status = prepare_static(job->source_fd, job->target, job->gzip_q, job->identity_q, &job->file);
             if(!job->status && config.cache_bytes && (uintmax_t)job->file.length<=config.cache_max_file_bytes) {
                 size_t length=(size_t)job->file.length;
                 char *data=malloc(length+1);
@@ -98,13 +98,14 @@ int file_io_init(void) {
     return 0;
 }
 int file_io_eventfd(void) { return wake_fd; }
-static io_job *submit(void *owner, int fd, const char *target, off_t offset, size_t length) {
+static io_job *submit(void *owner, int fd, const char *target, off_t offset, size_t length, int gzip_q, int identity_q) {
     pthread_mutex_lock(&lock);
     if (closing || outstanding == IO_LIMIT) { pthread_mutex_unlock(&lock); return NULL; }
     ++outstanding;
     pthread_mutex_unlock(&lock);
     io_job *job = calloc(1, sizeof *job);
     if (!job) goto failed;
+    job->gzip_q=gzip_q;job->identity_q=identity_q;
     job->owner = owner; job->file.fd = -1; job->source_fd = fd;
     if (target) { strcpy(job->target, target); job->kind = 0; }
     else {
@@ -122,13 +123,13 @@ failed:
     pthread_mutex_lock(&lock); --outstanding; pthread_mutex_unlock(&lock);
     return NULL;
 }
-io_job *file_io_open(void *owner, int root, const char *target) {
+io_job *file_io_open(void *owner, int root, const char *target,int gzip_q,int identity_q) {
     if (strlen(target) >= sizeof ((io_job *)0)->target) return NULL;
-    return submit(owner, root, target, 0, 0);
+    return submit(owner, root, target, 0, 0, gzip_q, identity_q);
 }
 io_job *file_io_read(void *owner, int fd, off_t offset, size_t length) {
     if (length > sizeof ((io_job *)0)->data) return NULL;
-    return submit(owner, fd, NULL, offset, length);
+    return submit(owner, fd, NULL, offset, length, 0, 0);
 }
 void file_io_ack(void) {
     uint64_t count_value;

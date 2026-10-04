@@ -1,6 +1,7 @@
 """Integration checks using only the Python standard library."""
 import concurrent.futures
 import hashlib
+import gzip
 import http.client
 from pathlib import Path
 import socket
@@ -676,6 +677,126 @@ class ServerTests(unittest.TestCase):
             self.assertEqual(after_full['c_http_file_jobs_submitted_total']-
                              after_range['c_http_file_jobs_submitted_total'],1)
         finally:self.finish_extra(proc)
+
+    def test_gzip_negotiation_cache_validators_head_and_ranges(self):
+        source=self.root/'compressible.txt'
+        content=b'compressible asset content\n'*2000
+        source.write_bytes(content)
+        sidecar=source.with_name(source.name+'.gz')
+        encoded=gzip.compress(content,mtime=0);sidecar.write_bytes(encoded)
+        try:
+            for capacity in (0,1048576):
+                with self.subTest(cache_bytes=capacity):
+                    proc,port=self.launch_config({'cache_bytes':capacity,'cache_ttl_ms':60000})
+                    try:
+                        status,identity,body=self.request_extra(port,'/compressible.txt')
+                        self.assertEqual(status,200);self.assertEqual(body,content)
+                        self.assertNotIn('Content-Encoding',identity)
+                        for value in ('gzip','GZIP','br, gzip;q=1','*;q=1','gzip, identity;q=0'):
+                            status,headers,body=self.request_extra(port,'/compressible.txt',{'Accept-Encoding':value})
+                            self.assertEqual(status,200);self.assertEqual(body,encoded)
+                            self.assertEqual(gzip.decompress(body),content)
+                            self.assertEqual(headers['Content-Encoding'],'gzip')
+                            self.assertEqual(headers['Content-Type'],'text/plain; charset=utf-8')
+                            self.assertEqual(int(headers['Content-Length']),len(encoded))
+                            self.assertEqual(headers['Vary'],'Accept-Encoding')
+                        compressed_tag=headers['ETag']
+                        self.assertNotEqual(identity['ETag'],compressed_tag)
+                        for value in ('','gzip;q=0','gzip;q=0.5, identity;q=1','br','gzip;q=0, gzip;q=1'):
+                            self.assertEqual(self.request_extra(port,'/compressible.txt',{'Accept-Encoding':value})[2],content)
+                        for value in ('identity;q=0, gzip;q=0','*;q=0'):
+                            self.assertEqual(self.request_extra(port,'/compressible.txt',{'Accept-Encoding':value})[0],406)
+                        for value in ('gzip;q=1.1','gzip;q=.5','gzip;q=0.1234','gzip;q=x','gzip;other=1'):
+                            self.assertEqual(self.request_extra(port,'/compressible.txt',{'Accept-Encoding':value})[0],400)
+                        headers={'Accept-Encoding':'gzip','If-None-Match':compressed_tag}
+                        status,h,body=self.request_extra(port,'/compressible.txt',headers)
+                        self.assertEqual(status,304);self.assertEqual(body,b'')
+                        self.assertEqual(h['Vary'],'Accept-Encoding')
+                        headers['If-None-Match']=identity['ETag']
+                        self.assertEqual(self.request_extra(port,'/compressible.txt',headers)[0],200)
+                        self.assertEqual(self.request_extra(port,'/compressible.txt',{'If-None-Match':compressed_tag})[0],200)
+                        status,h,body=self.request_extra(port,'/compressible.txt',{'Accept-Encoding':'gzip','Range':'bytes=0-2'})
+                        self.assertEqual(status,200);self.assertEqual(body,encoded)
+                        self.assertEqual(h['Accept-Ranges'],'none')
+                        self.assertEqual(self.request_extra(port,'/compressible.txt',{'Range':'bytes=0-2'})[2],content[:3])
+                        c=http.client.HTTPConnection('127.0.0.1',port,timeout=5)
+                        try:
+                            c.request('HEAD','/compressible.txt',headers={'Accept-Encoding':'gzip'})
+                            r=c.getresponse();self.assertEqual(r.read(),b'')
+                            self.assertEqual(r.getheader('Content-Encoding'),'gzip')
+                            self.assertEqual(int(r.getheader('Content-Length') or '0'),len(encoded))
+                        finally:c.close()
+                        with socket.create_connection(('127.0.0.1',port)) as sock:
+                            sock.settimeout(5)
+                            sock.sendall(b'GET /compressible.txt HTTP/1.1\r\nHost: a\r\nAccept-Encoding: gzip\r\n\r\n'
+                                b'GET /compressible.txt HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n')
+                            with sock.makefile('rb') as stream:
+                                self.assertEqual(self.raw_response(stream)[2],encoded)
+                                self.assertEqual(self.raw_response(stream)[2],content)
+                        if capacity:
+                            values=self.metric_values(self.request_extra(port,'/metrics')[2])
+                            self.assertEqual(values['c_http_cache_entries'],2)
+                            self.assertLessEqual(values['c_http_cache_bytes'],capacity)
+                    finally:self.finish_extra(proc)
+        finally:sidecar.unlink();source.unlink()
+
+    def test_gzip_missing_stale_symlink_and_directory_sidecars(self):
+        source=self.root/'sidecar.txt';source.write_bytes(b'content'*100)
+        sidecar=source.with_name(source.name+'.gz')
+        proc,port=self.launch_config({'cache_bytes':0})
+        try:
+            headers={'Accept-Encoding':'gzip, identity;q=0'}
+            self.assertEqual(self.request_extra(port,'/sidecar.txt',headers)[0],406)
+            sidecar.write_bytes(gzip.compress(source.read_bytes(),mtime=0))
+            os.utime(sidecar,ns=(1,1))
+            self.assertEqual(self.request_extra(port,'/sidecar.txt',headers)[0],406)
+            self.assertNotIn('Content-Encoding',self.request_extra(port,'/sidecar.txt',{'Accept-Encoding':'gzip'})[1])
+            sidecar.unlink();sidecar.symlink_to(source)
+            self.assertEqual(self.request_extra(port,'/sidecar.txt',headers)[0],406)
+            sidecar.unlink();sidecar.write_bytes(b'not gzip')
+            self.assertEqual(self.request_extra(port,'/sidecar.txt',headers)[0],406)
+            sidecar.write_bytes(gzip.compress(source.read_bytes(),mtime=0))
+            source.unlink()
+            self.assertEqual(self.request_extra(port,'/sidecar.txt',headers)[0],404)
+            index=self.root/'docs'/'index.html';compressed=index.with_name('index.html.gz')
+            compressed.write_bytes(gzip.compress(index.read_bytes(),mtime=0))
+            try:
+                status,h,body=self.request_extra(port,'/docs/',{'Accept-Encoding':'gzip'})
+                self.assertEqual(status,200);self.assertEqual(gzip.decompress(body),index.read_bytes())
+                self.assertTrue(h['Content-Type'].startswith('text/html'))
+            finally:compressed.unlink()
+        finally:self.finish_extra(proc);sidecar.unlink(missing_ok=True);source.unlink(missing_ok=True)
+
+    def test_gzip_cache_expiry_and_sidecar_update(self):
+        source=self.root/'expiring.txt';source.write_bytes(b'first asset'*100)
+        sidecar=source.with_name(source.name+'.gz');sidecar.write_bytes(gzip.compress(source.read_bytes(),mtime=0))
+        proc,port=self.launch_config({'cache_bytes':1048576,'cache_ttl_ms':50})
+        try:
+            _,old_headers,_=self.request_extra(port,'/expiring.txt',{'Accept-Encoding':'gzip'})
+            replacement=self.root/'updated.txt';replacement.write_bytes(b'new asset'*100)
+            replacement.replace(source)
+            sidecar.write_bytes(gzip.compress(source.read_bytes(),mtime=0))
+            time.sleep(.08)
+            status,headers,body=self.request_extra(port,'/expiring.txt',
+                {'Accept-Encoding':'gzip','If-None-Match':old_headers['ETag']})
+            self.assertEqual(status,200);self.assertEqual(gzip.decompress(body),source.read_bytes())
+            self.assertNotEqual(headers['ETag'],old_headers['ETag'])
+            sidecar.unlink();time.sleep(.08)
+            status,headers,body=self.request_extra(port,'/expiring.txt',{'Accept-Encoding':'gzip'})
+            self.assertEqual(status,200);self.assertNotIn('Content-Encoding',headers)
+            self.assertEqual(body,source.read_bytes())
+        finally:self.finish_extra(proc);sidecar.unlink(missing_ok=True);source.unlink()
+
+    def test_gzip_over_https(self):
+        cert,key,context=self.tls_files()
+        source=self.root/'tls-gzip.txt';source.write_bytes(b'HTTPS gzip asset'*10000)
+        sidecar=source.with_name(source.name+'.gz');sidecar.write_bytes(gzip.compress(source.read_bytes(),mtime=0))
+        proc,port=self.launch_config({'tls_cert':str(cert),'tls_key':str(key),'cache_bytes':0})
+        try:
+            status,h,body=self.request_extra(port,'/tls-gzip.txt',{'Accept-Encoding':'gzip'},context=context)
+            self.assertEqual(status,200);self.assertEqual(h['Content-Encoding'],'gzip')
+            self.assertEqual(gzip.decompress(body),source.read_bytes())
+        finally:self.finish_extra(proc);sidecar.unlink();source.unlink()
 
     def tls_files(self):
         if os.environ.get('C_HTTP_TEST_TLS')=='0':self.skipTest('HTTP-only build')

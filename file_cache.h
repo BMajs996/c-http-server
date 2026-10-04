@@ -5,6 +5,7 @@
 typedef struct file_cache_entry file_cache_entry;
 struct file_cache_stats { uintmax_t bytes, entries, hits, misses, evictions, expirations, bypasses; };
 file_cache_entry *file_cache_get(const char *path);
+file_cache_entry *file_cache_get_variant(const char *path, int gzip);
 /* Takes data ownership only on success. Entry comes with one response reference. */
 file_cache_entry *file_cache_insert(const char *path, struct static_file *file);
 struct static_file file_cache_metadata(const file_cache_entry *entry);

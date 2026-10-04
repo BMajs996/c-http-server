@@ -124,6 +124,23 @@ int main(void) {
     assert(current.entries==5 && current.bytes<=config.cache_bytes);
     file_cache_close();assert_empty();
 
+    /* Both encodings share limits but have independent identity and pinning. */
+    config.cache_bytes=8192;config.cache_entries=4;
+    file_cache_entry *identity=insert("/variant","plain");
+    struct static_file zipped=file("compressed");zipped.gzip=1;
+    file_cache_entry *gzip_entry=file_cache_insert("/variant",&zipped);
+    assert(gzip_entry && !zipped.data);
+    assert_present("/variant","plain");
+    file_cache_entry *hit=file_cache_get_variant("/variant",1);
+    assert(hit==gzip_entry && file_cache_metadata(hit).gzip==1);
+    file_cache_release(hit);
+    struct static_file changed=file("new compressed");changed.gzip=1;
+    file_cache_entry *new_gzip=file_cache_insert("/variant",&changed);
+    assert(new_gzip && !strcmp(file_cache_data(gzip_entry),"compressed"));
+    assert_present("/variant","plain");
+    file_cache_release(new_gzip);file_cache_release(gzip_entry);file_cache_release(identity);
+    file_cache_close();assert_empty();
+
     /* Failed insertion keeps caller ownership, including oversized paths. */
     config.cache_entries=1;config.cache_bytes=512;
     char long_path[2050];memset(long_path,'x',sizeof long_path-1);long_path[0]='/';long_path[sizeof long_path-1]=0;

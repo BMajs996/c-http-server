@@ -16,6 +16,7 @@ http_server: $(SOURCES) connection.h http_parser.h static_files.h logging.h cach
 test: http_server test_file_cache
 	./test_file_cache
 	python3 tests/test_server.py
+	python3 tests/test_precompress.py
 clean:
 	rm -f http_server fuzz_parser fuzz_libfuzzer test_file_cache cache_lookup_benchmark
 
@@ -39,3 +40,7 @@ fuzz_libfuzzer: fuzz/fuzz_parser.c http_parser.c cache.c
 
 test_file_cache: tests/test_file_cache.c file_cache.c config.c file_cache.h config.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -I. tests/test_file_cache.c file_cache.c config.c -o $@
+
+.PHONY: precompress
+precompress:
+	python3 tools/precompress.py public

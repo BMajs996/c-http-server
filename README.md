@@ -171,6 +171,56 @@ signal closes remaining sockets. Worker cleanup waits for active filesystem
 operations; a stuck filesystem can delay process exit beyond the socket deadline.
 Logging gets a bounded final flush.
 
+## Precompressed gzip assets
+
+Generate sidecars before starting the server or publishing assets:
+
+```sh
+make precompress
+# Or compress another document root:
+python3 tools/precompress.py /path/to/assets
+```
+
+The tool supports HTML, CSS, JavaScript, JSON, text, and SVG. It creates
+deterministic `.gz` files, verifies their decompressed content, and atomically
+replaces each sidecar. Outputs that are not smaller are omitted, and existing
+sidecars for those files are removed. Hidden files and symlinks are skipped.
+
+Static requests negotiate gzip and identity using `Accept-Encoding` quality
+values. Gzip wins ties when a usable sidecar exists. Missing or empty headers
+select identity; repeated codings use their lowest quality. If neither available
+representation is acceptable, the server returns 406. Malformed quality values
+return 400.
+
+Both representations send `Vary: Accept-Encoding` and separate ETags. Gzip
+responses preserve the original MIME type and send `Content-Encoding: gzip` and
+the compressed length. HEAD and conditional requests use the selected
+representation. Gzip ignores Range and returns the full response with
+`Accept-Ranges: none`; identity retains byte-range support. Cache variants share
+the configured byte and entry limits. HTTP uses the existing sendfile path for
+uncached bodies; HTTPS uses worker reads.
+
+The original file must exist. Sidecars must be regular files without symlinks,
+have gzip magic bytes, and have a modification time at least as recent as the
+original. The server does not verify the full gzip stream or its correspondence
+to the original; publish verified originals and sidecars together, preferably
+while the server is stopped. Cached responses can remain until cache TTL expiry.
+A gzip preference with an unavailable sidecar requires a worker lookup on each
+request before falling back to identity.
+
+After generating sidecars and starting the server:
+
+```sh
+curl -I -H 'Accept-Encoding: gzip' http://127.0.0.1:8080/assets/style.css
+curl --compressed http://127.0.0.1:8080/assets/style.css
+curl -I -H 'Accept-Encoding: identity' http://127.0.0.1:8080/assets/style.css
+```
+
+For a gzip benchmark, add `--accept-encoding gzip` to `tools/benchmark.py`.
+The result records this header and counts transferred compressed body bytes.
+Saved-result comparisons require matching encoding headers; examine separate
+identity and gzip summaries when comparing transfer sizes.
+
 ## Tests and fuzzing
 
 ```sh

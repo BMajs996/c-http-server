@@ -122,5 +122,5 @@ These are separate extensions after the first HTTP/1.1 release:
 
 ## Current progress
 
-Phases 1–3 are implemented and locally validated. The next planned enhancement
-is **Phase 4: compression**.
+Phases 1–4 are implemented and locally validated. The next planned enhancement
+is **Phase 5: routing and JSON APIs**.
