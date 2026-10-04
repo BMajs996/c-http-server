@@ -93,7 +93,6 @@ int parse_request(const char *data, size_t length, struct http_request *r) {
     if (strlen(target) >= sizeof r->target) return 414;
     strcpy(r->target, target);
     r->head = !strcmp(method, "HEAD");
-    int supported = r->head || !strcmp(method, "GET");
     r->http11 = !strcmp(version, "HTTP/1.1");
     if (!r->http11 && strcmp(version, "HTTP/1.0")) return 505;
     int hosts = 0, lengths = 0, close_requested = 0, keep_requested = 0;
@@ -152,6 +151,13 @@ int parse_request(const char *data, size_t length, struct http_request *r) {
                 if (*p < '0' || *p > '9' || content_length > (UINT64_MAX - (*p - '0')) / 10) return 400;
                 content_length = content_length * 10 + (*p - '0');
             }
+        } else if (!strcasecmp(line, "Content-Type") || !strcasecmp(line, "Content-Encoding")) {
+            int type = !strcasecmp(line, "Content-Type");
+            char *dest = type ? r->content_type : r->content_encoding;
+            size_t capacity = type ? sizeof r->content_type : sizeof r->content_encoding;
+            if (*dest || !*value) return 400;
+            if (strlen(value) >= capacity) return 431;
+            strcpy(dest,value);
         } else if (!strcasecmp(line, "If-None-Match")) {
             size_t old = strlen(r->if_none_match), add = strlen(value);
             if (!add || old + add + 2 >= sizeof r->if_none_match) return 431;
@@ -176,12 +182,11 @@ int parse_request(const char *data, size_t length, struct http_request *r) {
     }
     if (r->http11 && hosts != 1) return 400;
     if (transfer && lengths) return 400;
-    if (!supported) return 405;
-    /* Bodies are outside this server's scope. Always close on these errors:
-     * unread body bytes must never be mistaken for a pipelined request. */
+    /* Framing errors close the connection; unread bytes cannot be reused. */
     if (transfer) return 501;
     if (expect) return 417;
-    if (content_length) return 413;
+    if (content_length > BODY_LIMIT) return 413;
+    r->content_length = (size_t)content_length;
     r->gzip_q=gzip>=0?gzip:wildcard>=0?wildcard:0;
     r->identity_q=identity>=0?identity:wildcard==0?0:1000;
     r->keep_alive = !close_requested && (r->http11 || keep_requested);

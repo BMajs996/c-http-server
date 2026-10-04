@@ -7,6 +7,7 @@
 #include "transport.h"
 #include "cache.h"
 #include "http_parser.h"
+#include "router.h"
 #include "static_files.h"
 #include <errno.h>
 #include <inttypes.h>
@@ -25,7 +26,7 @@ extern atomic_int stopping;
 #define MAX_REQUESTS config.max_requests
 
 typedef enum {
-    READING_HEADERS, VALIDATING_REQUEST, PREPARING_RESPONSE,
+    READING_HEADERS, READING_BODY, VALIDATING_REQUEST, PREPARING_RESPONSE,
     WRITING_HEADERS, WRITING_BODY, RESPONSE_COMPLETE, CLOSING, WAIT_FILE_OPEN, WAIT_FILE_READ, TLS_HANDSHAKE, TLS_SHUTDOWN
 } connection_state;
 
@@ -37,7 +38,9 @@ struct connection {
     size_t input_used, scan_from, request_length;
     char output[1536], chunk[32768];
     size_t output_length, output_offset, chunk_length, chunk_offset;
-    const char *body, *type;
+    const char *body, *type, *allow;
+    char *request_body;
+    size_t body_used;
     uintmax_t body_length, remaining;
     int status, keep_alive;
     unsigned completed;
@@ -76,6 +79,7 @@ static const char *reason(int status) {
     case 406: return "Not Acceptable";
     case 408: return "Request Timeout";
     case 413: return "Content Too Large";
+    case 415: return "Unsupported Media Type";
     case 414: return "URI Too Long";
     case 417: return "Expectation Failed";
     case 431: return "Request Header Fields Too Large";
@@ -90,6 +94,11 @@ static void error_response(connection *c, int status) {
     c->body = reason(status);
     c->body_length = strlen(c->body);
     c->type = "text/plain; charset=utf-8";
+    if(route_is_api(c->request.target)) {
+        route_response response={0};route_error(status,&response);
+        c->status=response.status;c->body=response.body;
+        c->body_length=response.length;c->type=response.type;
+    }
 }
 static void read_error(connection *c, int status) {
     if (status == 408 && !c->timed_out) { metrics_timeout(); c->timed_out = 1; }
@@ -122,24 +131,37 @@ static void validate(connection *c) {
     memmove(c->input, c->input + c->request_length, left);
     c->input_used = left;
     c->scan_from = 0;
+    if (!status) status = route_check(&c->request,&c->allow);
     c->keep_alive = status == 0 && !c->draining && c->request.keep_alive && c->completed + 1 < MAX_REQUESTS;
     if (status) { metrics_request_rejected(); error_response(c, status); }
+    if(!status && c->request.content_length) {
+        c->request_body=malloc(c->request.content_length);
+        if(!c->request_body){c->keep_alive=0;error_response(c,500);}
+        else {c->state=READING_BODY;return;}
+    }
     c->state = PREPARING_RESPONSE;
+}
+static void read_body(connection *c) {
+    size_t remaining=c->request.content_length-c->body_used;
+    if(c->input_used) {
+        size_t count=c->input_used<remaining?c->input_used:remaining;
+        memcpy(c->request_body+c->body_used,c->input,count);c->body_used+=count;
+        c->input_used-=count;memmove(c->input,c->input+count,c->input_used);
+    } else {
+        ssize_t n=transport_read(c->socket_transport,c->request_body+c->body_used,remaining,&c->interest);
+        if(n>0)c->body_used+=(size_t)n;
+        else if(n!=-2){c->state=CLOSING;return;}
+    }
+    if(c->body_used==c->request.content_length)c->state=PREPARING_RESPONSE;
 }
 static void prepare(connection *c) {
     if (!c->status) {
         char *query = strchr(c->request.target, '?');
         if (query) *query = 0;
-        if (!strcmp(c->request.target, "/health")) {
-            c->status = 200; c->body = "{\"status\":\"ok\"}\n";
-            c->body_length = strlen(c->body); c->type = "application/json";
-        } else if (!strcmp(c->request.target, "/metrics")) {
-            size_t length = metrics_render(c->metrics_body, sizeof c->metrics_body);
-            if (!length) error_response(c, 500);
-            else {
-                c->status = 200; c->body = c->metrics_body; c->body_length = length;
-                c->type = "text/plain; version=0.0.4; charset=utf-8";
-            }
+        route_response response;
+        if(route_dispatch(&c->request,c->request_body?c->request_body:"",c->metrics_body,sizeof c->metrics_body,&response)) {
+            c->status=response.status;c->body=response.body;c->body_length=response.length;
+            c->type=response.type;c->allow=response.allow;
         } else {
             if (!c->open_ready) {
                 int gzip=c->request.gzip_q>0 && c->request.gzip_q>=c->request.identity_q;
@@ -196,12 +218,14 @@ static void prepare(connection *c) {
             }
         }
     }
+    if(route_is_api(c->request.target))strcpy(c->extra_headers,"Cache-Control: no-store\r\n");
+    if(c->status==405)snprintf(c->extra_headers,sizeof c->extra_headers,"%sAllow: %s\r\n",route_is_api(c->request.target)?"Cache-Control: no-store\r\n":"",c->allow?c->allow:"GET, HEAD");
     int n = snprintf(c->output, sizeof c->output,
         "%s %d %s\r\nContent-Type: %s\r\nContent-Length: %" PRIuMAX "\r\n"
-        "X-Content-Type-Options: nosniff\r\nConnection: %s\r\n%s%s\r\n",
+        "X-Content-Type-Options: nosniff\r\nConnection: %s\r\n%s\r\n",
         c->request.http11 ? "HTTP/1.1" : "HTTP/1.0", c->status, reason(c->status),
         c->type, c->body_length, c->keep_alive ? "keep-alive" : "close",
-        c->status == 405 ? "Allow: GET, HEAD\r\n" : "", c->extra_headers);
+        c->extra_headers);
     if (n < 0 || (size_t)n >= sizeof c->output) { c->state = CLOSING; return; }
     c->output_length = (size_t)n; c->output_offset = 0;
     c->remaining = c->request.head || c->status == 304 ? 0 : c->body_length;
@@ -264,6 +288,7 @@ static void complete(connection *c) {
     c->logged = 1;
     file_cache_release(c->cached);c->cached=NULL;
     if (c->file_fd >= 0) { close(c->file_fd); c->file_fd = -1; }
+    free(c->request_body);c->request_body=NULL;c->body_used=0;c->allow=NULL;
     ++c->completed;
     if (!c->keep_alive) { c->state = transport_tls_enabled()?TLS_SHUTDOWN:CLOSING; return; }
     c->sent = 0; c->logged = 0; c->timed_out = 0;
@@ -307,7 +332,7 @@ uint32_t connection_step(connection *c) {
         int64_t now = now_ms();
         if (now < 0) return 0;
         if (now >= c->deadline) {
-            if (c->state == READING_HEADERS && c->input_used) read_error(c, 408);
+            if ((c->state == READING_HEADERS && c->input_used) || c->state==READING_BODY) read_error(c, 408);
             else if (c->state != PREPARING_RESPONSE) {
                 if (!c->timed_out) { metrics_timeout(); c->timed_out = 1; }
                 return 0;
@@ -326,6 +351,7 @@ uint32_t connection_step(connection *c) {
             break;
         }
         case READING_HEADERS: read_headers(c); break;
+        case READING_BODY: read_body(c); break;
         case VALIDATING_REQUEST: validate(c); break;
         case PREPARING_RESPONSE: prepare(c); break;
         case WRITING_HEADERS: {
@@ -355,6 +381,7 @@ uint32_t connection_step(connection *c) {
 void connection_destroy(connection *c) {
     if (!c) return;
     if (c->job) c->job->owner = NULL; /* Orphan result is released by reactor. */
+    free(c->request_body);
     free(c->opened.data);
     file_cache_release(c->cached);
     if (c->opened.fd >= 0) close(c->opened.fd);
@@ -398,7 +425,7 @@ int connection_waiting(const connection *c) {
 
 void connection_drain(connection *c) {
     c->draining = 1; c->keep_alive = 0;
-    if (c->state == READING_HEADERS || c->state == TLS_HANDSHAKE) { c->state = CLOSING; return; }
+    if (c->state == READING_HEADERS || c->state == READING_BODY || c->state == TLS_HANDSHAKE) { c->state = CLOSING; return; }
     /* Never rewrite a header after sending any of its bytes. Persistence can
      * end at the response boundary even if keep-alive was already advertised. */
     if (c->state == WRITING_HEADERS && c->output_offset == 0) {

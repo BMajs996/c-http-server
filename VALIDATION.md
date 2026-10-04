@@ -1,5 +1,12 @@
 # Validation for configuration, cache, CI, and HTTPS
 
+## Phase 5: routing and JSON APIs
+
+- Method/path dispatch now covers health, metrics, API status, and JSON echo before static fallback. API errors use JSON with stable codes and route-specific Allow headers.
+- All 50 HTTP/HTTPS integration tests passed under AddressSanitizer and UndefinedBehaviorSanitizer. Cache unit tests and both precompression-tool tests also passed. New checks cover route selection, media types, UTF-8/JSON validation, the exact 16 KiB body boundary, fragmented bodies, mixed POST/static/API pipelines, framing rejections, body timeouts, partial-body disconnects, concurrent health requests, and shutdown cleanup.
+- Deterministic parser/range/JSON fuzzing passed 100,000 mutations, including a sanitizer-instrumented run. Strict TLS-enabled and HTTP-only builds passed.
+- Bodies are buffered only for accepted echo requests, bounded by Content-Length and a fixed 16 KiB limit. Chunked transfer and Expect remain unsupported. JSON nesting is limited to 32 containers; echo preserves input bytes rather than constructing a parsed object tree.
+
 ## Phase 4: precompressed gzip assets
 
 - Strict TLS-enabled build, all 44 HTTP/HTTPS integration tests, cache unit tests, and two asset-tool tests passed. Coverage includes negotiation, validators, HEAD, ranges, mixed pipelines, cache variants, expiry, sidecar updates, missing/stale/unsafe sidecars, and verified HTTPS.

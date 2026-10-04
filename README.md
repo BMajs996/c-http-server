@@ -71,8 +71,9 @@ strings do not affect file selection. `/health` returns JSON and `/metrics`
 returns Prometheus text. HTTP/1.1 keep-alive and pipelining are supported;
 HTTP/1.0 persistence requires `Connection: keep-alive`.
 
-Headers are capped at 8 KiB. Unsupported methods return 405. Ambiguous framing,
-request bodies, and malformed headers are rejected and close the connection.
+Headers are capped at 8 KiB. Unsupported route methods return 405 with `Allow`.
+Ambiguous framing and malformed headers are rejected and close the connection.
+Static files, health, and metrics reject nonempty request bodies.
 Uncached plain HTTP files use `sendfile()` to nonblocking client sockets in
 bounded 64 KiB calls.
 If the kernel cannot use `sendfile()`, the response resumes through the worker
@@ -170,6 +171,56 @@ and finish the current response on active connections. The deadline or a second
 signal closes remaining sockets. Worker cleanup waits for active filesystem
 operations; a stuck filesystem can delay process exit beyond the socket deadline.
 Logging gets a bounded final flush.
+
+## Routing and JSON APIs
+
+A method/path table in `router.c` dispatches built-in handlers before static-file
+fallback. Route paths are case sensitive and matched literally without query
+strings; percent-encoded aliases and trailing slashes do not match API routes.
+The `/api` namespace is reserved: unknown paths return JSON 404 errors.
+
+| Method | Path | Response |
+| --- | --- | --- |
+| GET, HEAD | `/health` | Existing JSON health response |
+| GET, HEAD | `/metrics` | Existing Prometheus metrics |
+| GET, HEAD | `/api/status` | `{"status":"ok"}` |
+| POST | `/api/echo` | The validated JSON request body, unchanged |
+
+```sh
+curl http://127.0.0.1:8080/api/status
+curl -i http://127.0.0.1:8080/api/echo \
+  -H 'Content-Type: application/json' --data '{"message":"hello","count":3}'
+```
+
+Echo accepts any complete UTF-8 JSON value, including arrays and scalars.
+Validation checks strings, escapes, numbers, literals, and at most 32 nested
+containers. It preserves whitespace and duplicate object keys and does not
+convert numeric values or normalize Unicode escapes. `Content-Type` must be
+`application/json` (parameters are ignored); content encoding must be absent or
+`identity`. Other media types or compressed request bodies return 415.
+
+Bodies have a fixed 16 KiB limit (`BODY_LIMIT` in `http_parser.h`). Only echo
+accepts nonempty bodies. The server allocates exactly the declared body length
+for accepted requests and releases it after the response or connection teardown.
+Without Content-Length, the body is empty and echo returns 400. Reads are
+nonblocking and preserve subsequent pipelined requests. The request deadline
+covers both headers and body and does not reset as bytes arrive. Incomplete
+bodies return 408 on timeout and are closed during shutdown.
+
+Transfer-Encoding is unsupported (501), Expect is unsupported (417), and
+conflicting framing is rejected (400). Oversized bodies return 413 before body
+allocation. Header, framing, routing, and media-type rejections close the
+connection. Invalid JSON returns 400 after consuming the complete body and can
+retain keep-alive. API responses use `Cache-Control: no-store`; errors use
+`{"error":{"status":400,"code":"bad_request"}}` with the appropriate status and
+stable code. Errors before an API target can be parsed use the ordinary HTTP
+error response. JSON response bodies are not gzip-compressed.
+
+To add a handler, register its path, method, Allow value, and function in the
+route table. The function receives the parsed request, bounded body, connection
+response buffer, and response descriptor. Returned body memory must remain valid
+until the response finishes; use literals, the supplied buffer, or the request
+body. Add body/media policy to `route_check` when introducing another body format.
 
 ## Precompressed gzip assets
 

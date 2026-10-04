@@ -1,7 +1,9 @@
 """Integration checks using only the Python standard library."""
 import concurrent.futures
+from contextlib import closing
 import hashlib
 import gzip
+import json
 import http.client
 from pathlib import Path
 import socket
@@ -59,6 +61,110 @@ class ServerTests(unittest.TestCase):
             return response.status, dict(response.getheaders()), response.read()
         finally:
             connection.close()
+
+    def api_request(self, body, path='/api/echo', method='POST', headers=None):
+        with closing(http.client.HTTPConnection('127.0.0.1', self.port, timeout=8)) as c:
+            c.request(method, path, body=body, headers=headers or {'Content-Type': 'application/json'})
+            r=c.getresponse()
+            return r.status,dict(r.getheaders()),r.read()
+
+    def test_api_routing_and_errors(self):
+        status,h,body=self.request('/api/status?version=1')
+        self.assertEqual(status,200);self.assertEqual(json.loads(body),{'status':'ok'})
+        self.assertEqual(h['Content-Type'],'application/json')
+        self.assertEqual(self.request('/api/status','HEAD')[2],b'')
+        for path,method,expected,allow in [('/api/missing','GET',404,None),
+                ('/api/status','POST',405,'GET, HEAD'),('/api/echo','GET',405,'POST'),
+                ('/api/echo','HEAD',405,'POST')]:
+            status,h,body=self.request(path,method)
+            self.assertEqual(status,expected)
+            self.assertEqual(h.get('Allow'),allow)
+            if method!='HEAD':self.assertEqual(json.loads(body)['error']['status'],expected)
+        self.assertEqual(self.request('/api/status/')[0],404)
+        self.assertEqual(self.request('/api/%73tatus')[0],404)
+        self.assertEqual(self.api_request(b'{}',headers={'Content-Type':'text/plain'})[0],415)
+        self.assertEqual(self.api_request(b'{}',headers={'Content-Type':'application/json','Content-Encoding':'gzip'})[0],415)
+
+    def test_api_json_validation_and_limits(self):
+        valid=[b'{}',b' [1, true, null, -12.3e+4, {"x":"a\\n"}] ',
+               '"hello \u2603"'.encode(),b'false',b'0',b'"\\u0041"',b'"'+b'a'*16382+b'"']
+        for body in valid:
+            status,h,result=self.api_request(body)
+            self.assertEqual(status,200,body[:100]);self.assertEqual(result,body)
+        invalid=[b'',b'{',b'{"a":1,}',b'[1,]',b'01',b'1.',b'1e',b'{}{}',
+                 b'"bad\x00"',b'"\xff"',b'"\xc0\xaf"',b'"\\q"',b'"\\\x00"',
+                 b'['*34+b'0'+b']'*34]
+        for body in invalid:
+            status,h,result=self.api_request(body)
+            self.assertEqual(status,400,body);self.assertEqual(json.loads(result)['error']['status'],400)
+        self.assertEqual(self.api_request(b'"'+b'a'*16383+b'"')[0],413)
+
+    def test_api_fragmented_body_and_pipeline(self):
+        body=b'{"message":"GET /health HTTP/1.1\\r\\n","x":1}'
+        with socket.create_connection(('127.0.0.1',self.port)) as sock:
+            sock.settimeout(8)
+            header=(f'POST /api/echo HTTP/1.1\r\nHost: a\r\nContent-Type: application/json\r\nContent-Length: {len(body)}\r\n\r\n').encode()
+            sock.sendall(header+body[:5]);time.sleep(.02)
+            sock.sendall(body[5:]+b'GET /style.css HTTP/1.1\r\nHost: a\r\n\r\nGET /api/status HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n')
+            with sock.makefile('rb') as stream:
+                self.assertEqual(self.raw_response(stream)[2],body)
+                self.assertEqual(self.raw_response(stream)[2],b'body { color: green; }')
+                self.assertEqual(json.loads(self.raw_response(stream)[2]),{'status':'ok'})
+                self.assertEqual(stream.read(),b'')
+        # A fully consumed malformed JSON body still permits the next request.
+        with socket.create_connection(('127.0.0.1',self.port)) as sock:
+            sock.settimeout(8)
+            sock.sendall(b'POST /api/echo HTTP/1.1\r\nHost: a\r\nContent-Type: application/json\r\nContent-Length: 1\r\n\r\nxGET /api/status HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n')
+            with sock.makefile('rb') as stream:
+                self.assertEqual(self.raw_response(stream)[0],400)
+                self.assertEqual(self.raw_response(stream)[0],200)
+
+    def test_api_framing_rejections_and_body_timeout(self):
+        for extra,status in [(b'Content-Length: 16385\r\n',413),
+                (b'Transfer-Encoding: chunked\r\n',501),(b'Expect: 100-continue\r\n',417),
+                (b'Content-Length: 1\r\nContent-Length: 1\r\n',400),
+                (b'Transfer-Encoding: chunked\r\nContent-Length: 1\r\n',400)]:
+            with socket.create_connection(('127.0.0.1',self.port)) as sock:
+                sock.settimeout(8)
+                sock.sendall(b'POST /api/echo HTTP/1.1\r\nHost: a\r\nContent-Type: application/json\r\n'+extra+b'\r\nxGET /health HTTP/1.1\r\nHost: a\r\n\r\n')
+                with sock.makefile('rb') as stream:
+                    code,h,body=self.raw_response(stream)
+                    self.assertEqual(code,status);self.assertEqual(json.loads(body)['error']['status'],status)
+                    self.assertEqual(h['connection'],'close');self.assertEqual(stream.read(),b'')
+        proc,port=self.launch_config({'request_timeout_ms':150})
+        try:
+            with socket.create_connection(('127.0.0.1',port)) as sock:
+                sock.settimeout(3)
+                sock.sendall(b'POST /api/echo HTTP/1.1\r\nHost: a\r\nContent-Type: application/json\r\nContent-Length: 10\r\n\r\n{')
+                with sock.makefile('rb') as stream:
+                    status,h,body=self.raw_response(stream)
+                    self.assertEqual(status,408);self.assertEqual(json.loads(body)['error']['status'],408)
+        finally:self.finish_extra(proc)
+
+    def test_api_incomplete_bodies_do_not_block_and_drain(self):
+        proc,port=self.launch_config({'request_timeout_ms':3000,'shutdown_ms':500})
+        held=[]
+        try:
+            for _ in range(8):
+                sock=socket.create_connection(('127.0.0.1',port));sock.settimeout(3);held.append(sock)
+                sock.sendall(b'POST /api/echo HTTP/1.1\r\nHost: a\r\nContent-Type: application/json\r\nContent-Length: 16384\r\n\r\n{')
+            self.assertEqual(self.request_extra(port,'/health')[0],200)
+            held.pop().close()  # Disconnect during a partial body.
+            proc.terminate();proc.wait(timeout=3)
+            for sock in held:self.assertEqual(sock.recv(1),b'')
+        finally:
+            for sock in held:sock.close()
+            self.finish_extra(proc)
+
+    def test_api_echo_https(self):
+        cert,key,context=self.tls_files()
+        proc,port=self.launch_config({'tls_cert':str(cert),'tls_key':str(key)})
+        try:
+            with closing(http.client.HTTPSConnection('localhost',port,context=context,timeout=8)) as c:
+                body=b'{"secure":true}'
+                c.request('POST','/api/echo',body=body,headers={'Content-Type':'application/json; charset=utf-8'})
+                r=c.getresponse();self.assertEqual(r.status,200);self.assertEqual(r.read(),body)
+        finally:self.finish_extra(proc)
 
     def test_files_and_types(self):
         for path, expected, mime in [('/', b'<h1>Hello</h1>', 'text/html; charset=utf-8'),
