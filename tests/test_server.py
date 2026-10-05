@@ -15,8 +15,10 @@ import subprocess
 import tempfile
 import time
 import unittest
+import sys
 
 PROJECT = Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(PROJECT / "tools"))
 
 class ServerTests(unittest.TestCase):
     @classmethod
@@ -165,6 +167,246 @@ class ServerTests(unittest.TestCase):
                 c.request('POST','/api/echo',body=body,headers={'Content-Type':'application/json; charset=utf-8'})
                 r=c.getresponse();self.assertEqual(r.status,200);self.assertEqual(r.read(),body)
         finally:self.finish_extra(proc)
+
+    def launch_auth(self, records=None, settings=None):
+        from auth_client import auth_headers
+        self.token_credential={'kind':'token','id':'token-a','secret':bytes(range(32)).hex()}
+        self.sign_credential={'kind':'hmac','id':'sign-a','secret':bytes(range(32,64)).hex()}
+        records=records if records is not None else [self.token_credential,self.sign_credential]
+        path=self.base/f'auth-{time.time_ns()}.credentials'
+        self.write_auth_file(path,records)
+        options={'auth_credentials_file':str(path)};options.update(settings or {})
+        proc,port=self.launch_config(options)
+        return proc,port,path
+
+    def write_auth_file(self,path,records):
+        lines=[]
+        for record in records:
+            secret=bytes.fromhex(record['secret'])
+            value=hashlib.sha256(secret).hexdigest() if record['kind']=='token' else secret.hex()
+            lines.append(f'{record["kind"]} {record["id"]} {value}\n')
+        temporary=path.with_name(path.name+'.new')
+        temporary.write_text(''.join(lines));temporary.chmod(0o600);temporary.replace(path)
+
+    def auth_request(self,port,path='/api/private/echo',body=b'{}',headers=None,method='POST',context=None):
+        from auth_client import auth_headers
+        credential=self.token_credential if method in ('GET','HEAD') else self.sign_credential
+        supplied={'Content-Type':'application/json'} if method=='POST' else {}
+        supplied.update(auth_headers(credential,method,path,body or b'',supplied.get('Content-Type','')) if headers is None else headers)
+        c=http.client.HTTPSConnection('localhost',port,context=context,timeout=5) if context else http.client.HTTPConnection('127.0.0.1',port,timeout=5)
+        try:
+            c.request(method,path,body=body,headers=supplied);r=c.getresponse()
+            return r.status,dict(r.getheaders()),r.read()
+        finally:c.close()
+
+    def wait_auth_reload(self,port,field,value):
+        deadline=time.monotonic()+5
+        while time.monotonic()<deadline:
+            metrics=self.metric_values(self.request_extra(port,'/metrics')[2])
+            if metrics[field]>=value:return
+            time.sleep(.02)
+        self.fail('Credential reload did not complete')
+
+    def test_auth_routes_stay_protected_without_credentials(self):
+        for path in ['/api/private/status','/api/private/echo']:
+            status,h,body=self.api_request(b'' if path.endswith('status') else b'{}',path=path,method='GET' if path.endswith('status') else 'POST')
+            self.assertEqual(status,401);self.assertEqual(json.loads(body)['error']['code'],'unauthorized')
+            self.assertEqual(h['Cache-Control'],'no-store')
+        self.assertEqual(self.request('/api/status')[0],200)
+
+    def test_auth_bearer_and_duplicate_headers(self):
+        from auth_client import auth_headers
+        proc,port,path=self.launch_auth()
+        try:
+            headers=auth_headers(self.token_credential,'GET','/api/private/status')
+            status,h,body=self.auth_request(port,'/api/private/status',body=None,method='GET',headers=headers)
+            self.assertEqual(status,200);self.assertEqual(json.loads(body),{'status':'ok'})
+            self.assertEqual(self.auth_request(port,'/api/private/status',body=None,method='HEAD',headers=headers)[2],b'')
+            for value in ['', 'Bearer unknown.'+'0'*64, 'Bearer token-a.'+'0'*64, 'Basic abc']:
+                status,h,body=self.auth_request(port,'/api/private/status',body=None,method='GET',headers={'Authorization':value})
+                self.assertEqual(status,401);self.assertIn('Bearer',h['WWW-Authenticate'])
+            # Bearer credentials cannot replace a required request signature.
+            self.assertEqual(self.auth_request(port,headers=headers)[0],401)
+            for name,value in [('Authorization',headers['Authorization']),('X-Auth-Key-Id','sign-a'),
+                    ('X-Auth-Timestamp','1'),('X-Auth-Nonce','0'*32),('X-Auth-Signature','0'*64)]:
+                with socket.create_connection(('127.0.0.1',port)) as sock:
+                    sock.settimeout(5)
+                    field=f'{name}: {value}\r\n{name}: {value}\r\n'.encode()
+                    sock.sendall(b'GET /api/private/status HTTP/1.1\r\nHost: a\r\n'+field+b'\r\nGET /health HTTP/1.1\r\nHost: a\r\n\r\n')
+                    with sock.makefile('rb') as stream:
+                        self.assertEqual(self.raw_response(stream)[0],400);self.assertEqual(stream.read(),b'')
+        finally:self.finish_extra(proc)
+
+    def test_auth_signatures_tampering_and_replay(self):
+        from auth_client import auth_headers
+        proc,port,path=self.launch_auth()
+        try:
+            target='/api/private/echo?x=1&y=2';body=b'{"x":1}'
+            signed=auth_headers(self.sign_credential,'POST',target,body,'application/json')
+            # Modified bytes are rejected without consuming the nonce.
+            self.assertEqual(self.auth_request(port,target,b'{"x":2}',signed)[0],401)
+            self.assertEqual(self.auth_request(port,'/api/private/echo?y=2&x=1',body,signed)[0],401)
+            changed={**signed,'Content-Type':'application/json; charset=utf-8'}
+            self.assertEqual(self.auth_request(port,target,body,changed)[0],401)
+            changed={**signed,'Content-Encoding':'identity'}
+            self.assertEqual(self.auth_request(port,target,body,changed)[0],401)
+            self.assertEqual(self.auth_request(port,target,body,signed)[2],body)
+            self.assertEqual(self.auth_request(port,target,body,signed)[0],401)
+            for delta in [-120,120]:
+                expired=auth_headers(self.sign_credential,'POST',target,body,'application/json',timestamp=int(time.time())+delta)
+                self.assertEqual(self.auth_request(port,target,body,expired)[0],401)
+            for field,value in [('X-Auth-Nonce','x'*32),('X-Auth-Timestamp','-1'),('X-Auth-Timestamp','01'),
+                    ('X-Auth-Signature','x'*64),('X-Auth-Key-Id','bad.id')]:
+                self.assertEqual(self.auth_request(port,target,body,{**signed,field:value})[0],400)
+            for field in signed:
+                missing=dict(signed);del missing[field]
+                self.assertEqual(self.auth_request(port,target,body,missing)[0],401)
+            unknown=auth_headers({**self.sign_credential,'id':'unknown'},'POST',target,body,'application/json')
+            self.assertEqual(self.auth_request(port,target,body,unknown)[0],401)
+            oversized={**signed,'X-Auth-Signature':'0'*65}
+            self.assertEqual(self.auth_request(port,target,body,oversized)[0],431)
+            simultaneous=auth_headers(self.sign_credential,'POST',target,body,'application/json')
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+                codes=list(pool.map(lambda _:self.auth_request(port,target,body,simultaneous)[0],range(8)))
+            self.assertEqual(sorted(codes),[200]+[401]*7)
+            # A signed invalid JSON body consumes its nonce.
+            bad=auth_headers(self.sign_credential,'POST',target,b'x','application/json')
+            self.assertEqual(self.auth_request(port,target,b'x',bad)[0],400)
+            self.assertEqual(self.auth_request(port,target,b'x',bad)[0],401)
+        finally:self.finish_extra(proc)
+
+    def test_auth_capacity_expiry_and_invalid_requests(self):
+        from auth_client import auth_headers
+        proc,port,path=self.launch_auth(settings={'auth_nonce_entries':2,'auth_timestamp_window_s':1})
+        try:
+            body=b'{}';target='/api/private/echo'
+            headers=auth_headers(self.sign_credential,'POST',target,body,'application/json')
+            self.assertEqual(self.auth_request(port,target,b'[]',headers)[0],401)
+            self.assertEqual(self.auth_request(port,target,body,headers)[0],200)
+            self.assertEqual(self.auth_request(port)[0],200)
+            self.assertEqual(self.auth_request(port)[0],503)
+            self.assertEqual(self.request_extra(port,'/health')[0],200)
+            metrics=self.metric_values(self.request_extra(port,'/metrics')[2])
+            self.assertEqual(metrics['c_http_auth_nonce_entries'],2)
+            self.assertEqual(metrics['c_http_auth_capacity_rejections_total'],1)
+            time.sleep(3.1)
+            self.assertEqual(self.auth_request(port)[0],200)
+        finally:self.finish_extra(proc)
+
+    def test_auth_rotation_revocation_and_replay_survive_reload(self):
+        from auth_client import auth_headers
+        proc,port,path=self.launch_auth()
+        try:
+            target='/api/private/echo';headers=auth_headers(self.sign_credential,'POST',target,b'{}','application/json')
+            self.assertEqual(self.auth_request(port,headers=headers)[0],200)
+            new_token={**self.token_credential,'id':'token-b','secret':'ab'*32}
+            new_sign={**self.sign_credential,'id':'sign-b','secret':'cd'*32}
+            self.write_auth_file(path,[self.token_credential,self.sign_credential,new_token,new_sign])
+            proc.send_signal(signal.SIGHUP);self.wait_auth_reload(port,'c_http_auth_reloads_total',1)
+            self.assertEqual(self.auth_request(port,headers=headers)[0],401)
+            token_headers=auth_headers(new_token,'GET','/api/private/status')
+            c=http.client.HTTPConnection('127.0.0.1',port,timeout=5)
+            try:
+                c.request('GET','/api/private/status',headers=token_headers);r=c.getresponse();self.assertEqual(r.status,200);r.read()
+                self.write_auth_file(path,[new_token,new_sign]);proc.send_signal(signal.SIGHUP)
+                self.wait_auth_reload(port,'c_http_auth_reloads_total',2)
+                old=auth_headers(self.token_credential,'GET','/api/private/status')
+                c.request('GET','/api/private/status',headers=old);r=c.getresponse();self.assertEqual(r.status,401);r.read()
+            finally:c.close()
+            self.assertEqual(self.auth_request(port)[0],401) # Old signing key revoked.
+            new_headers=auth_headers(new_sign,'POST',target,b'{}','application/json')
+            self.assertEqual(self.auth_request(port,headers=new_headers)[0],200)
+            path.write_text('invalid credentials\n');path.chmod(0o600)
+            proc.send_signal(signal.SIGHUP);self.wait_auth_reload(port,'c_http_auth_reload_failures_total',1)
+            self.assertEqual(self.auth_request(port,'/api/private/status',body=None,method='GET',headers=token_headers)[0],200)
+            self.write_auth_file(path,[]);proc.send_signal(signal.SIGHUP)
+            self.wait_auth_reload(port,'c_http_auth_reloads_total',3)
+            self.assertEqual(self.auth_request(port,'/api/private/status',body=None,method='GET',headers=token_headers)[0],401)
+        finally:self.finish_extra(proc)
+
+    def test_auth_fragmented_signed_pipeline_and_revocation_during_body(self):
+        from auth_client import auth_headers
+        proc,port,path=self.launch_auth()
+        try:
+            body=b'{"fragmented":true}';target='/api/private/echo?raw=%2f'
+            headers=auth_headers(self.sign_credential,'POST',target,body,'application/json')
+            header=(f'POST {target} HTTP/1.1\r\nHost: a\r\nContent-Type: application/json\r\nContent-Length: {len(body)}\r\n'+''.join(f'{k}: {v}\r\n' for k,v in headers.items())+'\r\n').encode()
+            with socket.create_connection(('127.0.0.1',port)) as sock:
+                sock.settimeout(5);sock.sendall(header[:30]);time.sleep(.02);sock.sendall(header[30:]+body[:2]);time.sleep(.02)
+                sock.sendall(body[2:]+b'GET /health HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n')
+                with sock.makefile('rb') as stream:
+                    self.assertEqual(self.raw_response(stream)[2],body)
+                    self.assertEqual(self.raw_response(stream)[0],200)
+            headers=auth_headers(self.sign_credential,'POST',target,body,'application/json')
+            header=(f'POST {target} HTTP/1.1\r\nHost: a\r\nContent-Type: application/json\r\nContent-Length: {len(body)}\r\n'+''.join(f'{k}: {v}\r\n' for k,v in headers.items())+'\r\n').encode()
+            with socket.create_connection(('127.0.0.1',port)) as sock:
+                sock.settimeout(5);sock.sendall(header+body[:2]);time.sleep(.05)
+                self.write_auth_file(path,[self.token_credential]);proc.send_signal(signal.SIGHUP)
+                self.wait_auth_reload(port,'c_http_auth_reloads_total',1)
+                sock.sendall(body[2:])
+                with sock.makefile('rb') as stream:self.assertEqual(self.raw_response(stream)[0],401)
+        finally:self.finish_extra(proc)
+
+    def test_auth_reload_does_not_block_requests(self):
+        from unittest import mock
+        with mock.patch.dict(os.environ,{'C_HTTP_TEST_IO_DELAY_MS':'300'}):
+            proc,port,path=self.launch_auth(settings={'file_workers':1,'file_job_limit':1})
+        try:
+            self.write_auth_file(path,[self.token_credential,self.sign_credential])
+            proc.send_signal(signal.SIGHUP)
+            deadline=time.monotonic()+3
+            while time.monotonic()<deadline:
+                metrics=self.metric_values(self.request_extra(port,'/metrics')[2])
+                if metrics['c_http_file_jobs_running']:break
+                time.sleep(.01)
+            else:self.fail('Reload did not enter the worker pool')
+            start=time.monotonic()
+            self.assertEqual(self.request_extra(port,'/health')[0],200)
+            self.assertEqual(self.auth_request(port,'/api/private/status',body=None,method='GET')[0],200)
+            self.assertLess(time.monotonic()-start,.25)
+            self.wait_auth_reload(port,'c_http_auth_reloads_total',1)
+        finally:self.finish_extra(proc)
+
+    def test_auth_credential_file_validation(self):
+        keyfile=self.base/'invalid.credentials'
+        key='00'*32
+        bad_records=['token bad.id '+key,'token a '+key+'\ntoken a '+key,'hmac a 123',
+                     'other a '+key, 'hmac a '+key+' extra', 'hmac a '+key+'\x00',
+                     ''.join(f'hmac k{i} {key}\n' for i in range(17))]
+        for record in bad_records:
+            keyfile.write_text(record);keyfile.chmod(0o600)
+            config=self.base/'auth-invalid.conf'
+            config.write_text(f'document_root={self.root}\nauth_credentials_file={keyfile}\n')
+            result=subprocess.run([str(PROJECT/'http_server'),'--config',str(config)],capture_output=True,timeout=5)
+            self.assertNotEqual(result.returncode,0);self.assertIn(b'Authentication initialization failed',result.stderr)
+        keyfile.write_text('hmac a '+key+'\n');keyfile.chmod(0o644)
+        result=subprocess.run([str(PROJECT/'http_server'),'--config',str(config)],capture_output=True,timeout=5)
+        self.assertNotEqual(result.returncode,0)
+        keyfile.chmod(0o600)
+        for forbidden in [self.root/'inside.credentials',self.base/'symlink.credentials',self.base/'hardlink.credentials']:
+            if forbidden.name=='inside.credentials':forbidden.write_bytes(keyfile.read_bytes());forbidden.chmod(0o600)
+            elif forbidden.name=='symlink.credentials':forbidden.symlink_to(keyfile)
+            else:os.link(keyfile,forbidden)
+            try:
+                config.write_text(f'document_root={self.root}\nauth_credentials_file={forbidden}\n')
+                result=subprocess.run([str(PROJECT/'http_server'),'--config',str(config)],capture_output=True,timeout=5)
+                self.assertNotEqual(result.returncode,0)
+            finally:forbidden.unlink()
+
+    def test_auth_https_and_secret_free_logs(self):
+        from auth_client import auth_headers
+        cert,key,context=self.tls_files()
+        log=self.base/f'auth-log-{time.time_ns()}.jsonl'
+        proc,port,path=self.launch_auth(settings={'tls_cert':str(cert),'tls_key':str(key),'access_log':str(log)})
+        headers=auth_headers(self.sign_credential,'POST','/api/private/echo',b'{}','application/json')
+        try:
+            self.assertEqual(self.auth_request(port,headers=headers,context=context)[0],200)
+            self.assertEqual(self.auth_request(port,'/api/private/status',body=None,method='GET',context=context)[0],200)
+        finally:self.finish_extra(proc)
+        contents=log.read_text()
+        for value in [self.token_credential['secret'],self.sign_credential['secret'],headers['X-Auth-Signature']]:
+            self.assertNotIn(value,contents)
+        self.assertEqual(len(contents.splitlines()),2)
 
     def test_files_and_types(self):
         for path, expected, mime in [('/', b'<h1>Hello</h1>', 'text/html; charset=utf-8'),

@@ -55,6 +55,8 @@ int main(int argc, char **argv) {
         "GET / HTTP/1.1\r\nHost: a\r\nAccept-Encoding: *;q=0\r\nAccept-Encoding: gzip;q=0.7\r\n\r\n",
         "{\"nested\":[true,null,1.2e3,\"text\"]}",
         "POST /api/echo HTTP/1.1\r\nHost: a\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n",
+        "POST /api/private/echo?x=%2f HTTP/1.1\r\nHost: a\r\nX-Auth-Key-Id: client-a\r\nX-Auth-Timestamp: 1000\r\nX-Auth-Nonce: 00000000000000000000000000000000\r\nX-Auth-Signature: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n",
+        "GET /api/private/status HTTP/1.1\r\nHost: a\r\nAuthorization: Bearer example\r\nAuthorization: Bearer duplicate\r\n\r\n",
         "bytes=0-4095", "bytes=-20", "bytes=18446744073709551615-"
     };
     uint8_t data[HEADER_LIMIT + 32];

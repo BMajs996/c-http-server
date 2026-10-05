@@ -3,6 +3,7 @@
 /fuzz_parser
 /fuzz_libfuzzer
 /test_file_cache
+/test_auth
 /cache_lookup_benchmark
 *.o
 
@@ -23,3 +24,8 @@ __pycache__/
 *.log
 *.jsonl
 *.pid
+
+# Authentication secrets
+/.secrets/
+*.credentials
+*.auth-client

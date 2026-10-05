@@ -25,7 +25,8 @@
 
 _Static_assert(ATOMIC_INT_LOCK_FREE == 2, "Signal handler requires lock-free atomic int");
 atomic_int stopping = 0;
-static atomic_int shutdown_requests;
+static atomic_int shutdown_requests, reload_requested;
+static void reload_credentials(int sig) { (void)sig;atomic_store(&reload_requested,1); }
 static void stop_server(int sig) { (void)sig; atomic_fetch_add(&shutdown_requests, 1); }
 static int64_t now_ms(void) {
     struct timespec t;
@@ -74,6 +75,8 @@ int main(int argc, char **argv) {
     sigemptyset(&action.sa_mask);
     if (sigaction(SIGINT, &action, NULL) < 0 || sigaction(SIGTERM, &action, NULL) < 0 ||
         signal(SIGPIPE, SIG_IGN) == SIG_ERR) { perror("signal"); return EXIT_FAILURE; }
+    action.sa_handler=reload_credentials;
+    if(sigaction(SIGHUP,&action,NULL)<0){perror("signal");return EXIT_FAILURE;}
     if(transport_init()<0)return EXIT_FAILURE;
     if (logging_init() < 0) {transport_close();return EXIT_FAILURE;}
     metrics_init((unsigned)limit);
@@ -81,6 +84,7 @@ int main(int argc, char **argv) {
     connection **slots = NULL;
     root = open(config.document_root, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (root < 0) { perror("document root"); goto cleanup; }
+    if(auth_init()<0){fprintf(stderr,"Authentication initialization failed: check credential file and limits\n");goto cleanup;}
     server = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (server < 0) { perror("socket"); goto cleanup; }
     int reuse = 1;
@@ -113,6 +117,7 @@ int main(int argc, char **argv) {
     failed = 0;
     int draining = 0;
     int64_t drain_deadline = 0;
+    io_job *credential_reload=NULL;int reload_pending=0;
     while (!stopping) {
         if (atomic_load(&shutdown_requests) && !draining) {
             draining = 1; metrics_draining();
@@ -126,6 +131,11 @@ int main(int argc, char **argv) {
             }
         }
         if (draining && (metrics_active() == 0 || atomic_load(&shutdown_requests) > 1 || now_ms() >= drain_deadline)) break;
+        if(atomic_exchange(&reload_requested,0))reload_pending=1;
+        if(reload_pending && !credential_reload && !draining) {
+            if(!*config.auth_credentials_file){auth_reload_result(NULL);reload_pending=0;}
+            else {credential_reload=file_io_auth_reload();if(credential_reload)reload_pending=0;}
+        }
         struct epoll_event events[128];
         int count = epoll_wait(epoll_fd, events, 128, 100);
         if (count < 0) {
@@ -176,6 +186,11 @@ int main(int argc, char **argv) {
          * slot that still has a stale socket event in this batch. */
         io_job *job;
         while ((job = file_io_result())) {
+            if(job->kind==2) {
+                credential_reload=NULL;
+                if(!draining){auth_reload_result(job->credentials);job->credentials=NULL;}
+                file_io_release(job);continue;
+            }
             connection *owner = job->owner;
             if (owner) connection_io_complete(owner, job);
             file_io_release(job);
@@ -198,6 +213,7 @@ cleanup:
         free(slots);
     }
     file_io_close();
+    auth_close();
     file_cache_close(); /* Join active disk work before closing the shared root. */
     if (epoll_fd >= 0) close(epoll_fd);
     if (server >= 0) close(server);

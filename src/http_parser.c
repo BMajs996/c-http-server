@@ -1,5 +1,6 @@
 #include "http_parser.h"
 #include <ctype.h>
+#include <openssl/crypto.h>
 #include <stdint.h>
 #include <string.h>
 #include <strings.h>
@@ -68,10 +69,7 @@ static int encoding_preferences(char *value,int *gzip,int *identity,int *wildcar
     }
     return 0;
 }
-int parse_request(const char *data, size_t length, struct http_request *r) {
-    char text[HEADER_LIMIT + 1];
-    if (length < 4 || length > HEADER_LIMIT || memchr(data, 0, length)) return 400;
-    memcpy(text, data, length); text[length] = 0;
+static int parse_headers(char *text, struct http_request *r) {
     memset(r, 0, sizeof *r);
     char *end = strstr(text, "\r\n");
     if (!end) return 400;
@@ -97,6 +95,7 @@ int parse_request(const char *data, size_t length, struct http_request *r) {
     if (!r->http11 && strcmp(version, "HTTP/1.0")) return 505;
     int hosts = 0, lengths = 0, close_requested = 0, keep_requested = 0;
     int transfer = 0, expect = 0;
+    unsigned auth_seen=0;
     int gzip=-1,identity=-1,wildcard=-1;
     uint64_t content_length = 0;
     char *line = end + 2;
@@ -115,7 +114,18 @@ int parse_request(const char *data, size_t length, struct http_request *r) {
         while (*value == ' ' || *value == '\t') ++value;
         char *tail = value + strlen(value);
         while (tail > value && (tail[-1] == ' ' || tail[-1] == '\t')) *--tail = 0;
-        if (!strcasecmp(line, "Host")) {
+        char *auth_value=NULL;size_t auth_capacity=0;unsigned auth_bit=0;
+        if(!strcasecmp(line,"Authorization")){auth_value=r->authorization;auth_capacity=sizeof r->authorization;auth_bit=1;}
+        else if(!strcasecmp(line,"X-Auth-Key-Id")){auth_value=r->auth_key_id;auth_capacity=sizeof r->auth_key_id;auth_bit=2;}
+        else if(!strcasecmp(line,"X-Auth-Timestamp")){auth_value=r->auth_timestamp;auth_capacity=sizeof r->auth_timestamp;auth_bit=4;}
+        else if(!strcasecmp(line,"X-Auth-Nonce")){auth_value=r->auth_nonce;auth_capacity=sizeof r->auth_nonce;auth_bit=8;}
+        else if(!strcasecmp(line,"X-Auth-Signature")){auth_value=r->auth_signature;auth_capacity=sizeof r->auth_signature;auth_bit=16;}
+        if(auth_value) {
+            if(auth_seen&auth_bit)return 400;
+            auth_seen|=auth_bit;
+            if(strlen(value)>=auth_capacity)return 431;
+            strcpy(auth_value,value);
+        } else if (!strcasecmp(line, "Host")) {
             if (++hosts > 1 || !*value) return 400;
             /* Deliberately conservative authority syntax: DNS/IPv4 and
              * bracketed IPv6, with an optional decimal port. */
@@ -191,4 +201,11 @@ int parse_request(const char *data, size_t length, struct http_request *r) {
     r->identity_q=identity>=0?identity:wildcard==0?0:1000;
     r->keep_alive = !close_requested && (r->http11 || keep_requested);
     return 0;
+}
+
+int parse_request(const char *data,size_t length,struct http_request *r) {
+    if(length<4 || length>HEADER_LIMIT || memchr(data,0,length))return 400;
+    char text[HEADER_LIMIT+1];memcpy(text,data,length);text[length]=0;
+    int status=parse_headers(text,r);
+    OPENSSL_cleanse(text,length+1);return status;
 }

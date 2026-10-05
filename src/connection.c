@@ -10,6 +10,7 @@
 #include "router.h"
 #include "static_files.h"
 #include <errno.h>
+#include <openssl/crypto.h>
 #include <inttypes.h>
 #include <sys/epoll.h>
 #include <stdlib.h>
@@ -72,6 +73,7 @@ static const char *reason(int status) {
     case 206: return "Partial Content";
     case 304: return "Not Modified";
     case 416: return "Range Not Satisfiable";
+    case 401: return "Unauthorized";
     case 400: return "Bad Request";
     case 403: return "Forbidden";
     case 404: return "Not Found";
@@ -129,9 +131,11 @@ static void validate(connection *c) {
     int status = parse_request(c->input, c->request_length, &c->request);
     size_t left = c->input_used - c->request_length;
     memmove(c->input, c->input + c->request_length, left);
+    OPENSSL_cleanse(c->input+left,c->input_used-left);
     c->input_used = left;
     c->scan_from = 0;
     if (!status) status = route_check(&c->request,&c->allow);
+    if (!status) status = auth_headers(&c->request,route_auth(c->request.target));
     c->keep_alive = status == 0 && !c->draining && c->request.keep_alive && c->completed + 1 < MAX_REQUESTS;
     if (status) { metrics_request_rejected(); error_response(c, status); }
     if(!status && c->request.content_length) {
@@ -155,6 +159,10 @@ static void read_body(connection *c) {
     if(c->body_used==c->request.content_length)c->state=PREPARING_RESPONSE;
 }
 static void prepare(connection *c) {
+    if(!c->status && route_auth(c->request.target)==AUTH_SIGNED) {
+        int status=auth_verify(&c->request,c->request_body?c->request_body:"");
+        if(status){metrics_request_rejected();c->keep_alive=0;error_response(c,status);}
+    }
     if (!c->status) {
         char *query = strchr(c->request.target, '?');
         if (query) *query = 0;
@@ -219,6 +227,8 @@ static void prepare(connection *c) {
         }
     }
     if(route_is_api(c->request.target))strcpy(c->extra_headers,"Cache-Control: no-store\r\n");
+    if(c->status==401 && route_auth(c->request.target)==AUTH_BEARER)
+        strcat(c->extra_headers,"WWW-Authenticate: Bearer realm=\"api\"\r\n");
     if(c->status==405)snprintf(c->extra_headers,sizeof c->extra_headers,"%sAllow: %s\r\n",route_is_api(c->request.target)?"Cache-Control: no-store\r\n":"",c->allow?c->allow:"GET, HEAD");
     int n = snprintf(c->output, sizeof c->output,
         "%s %d %s\r\nContent-Type: %s\r\nContent-Length: %" PRIuMAX "\r\n"
@@ -308,7 +318,7 @@ static void complete(connection *c) {
     c->status = 0; c->body = NULL; c->type = NULL;
     c->body_length = c->remaining = 0;
     c->chunk_offset = c->chunk_length = 0;
-    memset(&c->request, 0, sizeof c->request);
+    OPENSSL_cleanse(&c->request,sizeof c->request);
     int64_t now = now_ms();
     if (now < 0) { c->state = CLOSING; return; }
     c->deadline = now + REQUEST_TIMEOUT_MS;
@@ -408,6 +418,8 @@ void connection_destroy(connection *c) {
     }
     metrics_close();
     if (c->file_fd >= 0) close(c->file_fd);
+    OPENSSL_cleanse(&c->request,sizeof c->request);
+    OPENSSL_cleanse(c->input,sizeof c->input);
     transport_destroy(c->socket_transport);
     close(c->fd);
     free(c);

@@ -41,5 +41,5 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y clang
+      - run: sudo apt-get update && sudo apt-get install -y clang libssl-dev
       - run: make fuzz_libfuzzer && ./fuzz_libfuzzer fuzz/corpus -runs=100000 -max_len=8224

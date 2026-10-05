@@ -5,6 +5,7 @@
 #include "transport.h"
 #include "file_io.h"
 #include "logging.h"
+#include "auth.h"
 #include <stdio.h>
 #include <time.h>
 static uint64_t accepted, rejected, active, completed, aborted, bytes_sent, timeouts, invalid;
@@ -40,6 +41,7 @@ size_t metrics_render(char *buffer, size_t capacity) {
     struct file_io_stats io;
     file_io_snapshot(&io);
     struct file_cache_stats cache;file_cache_snapshot(&cache);
+    struct auth_stats auth;auth_snapshot(&auth);
     size_t used = 0;
 #define PUT(...) do { int n = snprintf(buffer + used, capacity - used, __VA_ARGS__); \
     if (n < 0 || (size_t)n >= capacity - used) { return 0; } used += (size_t)n; } while (0)
@@ -81,6 +83,17 @@ size_t metrics_render(char *buffer, size_t capacity) {
     COUNTER("cache_evictions_total", cache.evictions);
     COUNTER("cache_expirations_total", cache.expirations);
     COUNTER("cache_bypasses_total", cache.bypasses);
+    GAUGE("auth_credentials",auth.credentials);
+    GAUGE("auth_nonce_entries",auth.nonce_entries);
+    GAUGE("auth_nonce_limit",config.auth_nonce_entries);
+    COUNTER("auth_accepted_total",auth.accepted);
+    COUNTER("auth_rejected_total",auth.rejected);
+    COUNTER("auth_invalid_signatures_total",auth.signatures_invalid);
+    COUNTER("auth_invalid_timestamps_total",auth.timestamps_invalid);
+    COUNTER("auth_replays_total",auth.replays);
+    COUNTER("auth_capacity_rejections_total",auth.capacity_rejections);
+    COUNTER("auth_reloads_total",auth.reloads);
+    COUNTER("auth_reload_failures_total",auth.reload_failures);
     PUT("# TYPE c_http_response_duration_seconds histogram\n");
     const char *bounds[] = {"0.001", "0.005", "0.010", "0.025", "0.050", "0.100", "1.000", "+Inf"};
     for (unsigned i = 0; i < 8; ++i)

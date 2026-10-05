@@ -66,7 +66,9 @@ static void *worker(void *unused) {
                 }
             }
         }
-        else {
+        else if(job->kind==2) {
+            job->credentials=auth_load(job->target,config.document_root);
+        } else {
             do { job->bytes = pread(job->source_fd, job->data, job->length, job->offset); }
             while (job->bytes < 0 && errno == EINTR);
             close(job->source_fd); job->source_fd = -1;
@@ -98,7 +100,7 @@ int file_io_init(void) {
     return 0;
 }
 int file_io_eventfd(void) { return wake_fd; }
-static io_job *submit(void *owner, int fd, const char *target, off_t offset, size_t length, int gzip_q, int identity_q) {
+static io_job *submit(void *owner, int fd, const char *target, off_t offset, size_t length, int gzip_q, int identity_q, int kind) {
     pthread_mutex_lock(&lock);
     if (closing || outstanding == IO_LIMIT) { pthread_mutex_unlock(&lock); return NULL; }
     ++outstanding;
@@ -107,7 +109,8 @@ static io_job *submit(void *owner, int fd, const char *target, off_t offset, siz
     if (!job) goto failed;
     job->gzip_q=gzip_q;job->identity_q=identity_q;
     job->owner = owner; job->file.fd = -1; job->source_fd = fd;
-    if (target) { strcpy(job->target, target); job->kind = 0; }
+    job->kind=kind;
+    if (target) { strcpy(job->target, target); }
     else {
         job->kind = 1; job->length = length; job->offset = offset;
         job->source_fd = fcntl(fd, F_DUPFD_CLOEXEC, 0);
@@ -125,11 +128,14 @@ failed:
 }
 io_job *file_io_open(void *owner, int root, const char *target,int gzip_q,int identity_q) {
     if (strlen(target) >= sizeof ((io_job *)0)->target) return NULL;
-    return submit(owner, root, target, 0, 0, gzip_q, identity_q);
+    return submit(owner, root, target, 0, 0, gzip_q, identity_q, 0);
 }
 io_job *file_io_read(void *owner, int fd, off_t offset, size_t length) {
     if (length > sizeof ((io_job *)0)->data) return NULL;
-    return submit(owner, fd, NULL, offset, length, 0, 0);
+    return submit(owner, fd, NULL, offset, length, 0, 0, 1);
+}
+io_job *file_io_auth_reload(void) {
+    return submit(NULL,-1,config.auth_credentials_file,0,0,0,0,2);
 }
 void file_io_ack(void) {
     uint64_t count_value;
@@ -143,6 +149,7 @@ io_job *file_io_result(void) {
 }
 void file_io_release(io_job *job) {
     if (!job) return;
+    auth_keyset_free(job->credentials);
     free(job->file.data);
     if (job->file.fd >= 0) close(job->file.fd);
     if (job->kind == 1 && job->source_fd >= 0) close(job->source_fd);

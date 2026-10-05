@@ -1,5 +1,14 @@
 # Validation for configuration, cache, CI, and HTTPS
 
+## Phase 6: authentication and request signing
+
+- Bearer-protected status and HMAC-SHA-256 protected echo routes now use bounded credential loading, constant-time secret comparison, strict authentication headers, exact-byte versioned signing, timestamp checks, and bounded nonce replay tracking. Credential-only SIGHUP reloads run in the file-worker pool, preserve replay state, and retain the old credentials on failure.
+- All 59 TLS-enabled integration tests passed under AddressSanitizer and UndefinedBehaviorSanitizer. The strict HTTP-only suite also passed (53 passed, six HTTPS tests skipped). Cache and authentication C unit tests, two precompression tests, and three credential/client/benchmark-tool tests passed.
+- Authentication unit tests match an independent Python signature fixture and cover timestamp boundaries, arithmetic overflow, replay retention, exhaustion, reload preservation, observed clock rollback, and unobserved clock slowdown. Integration checks include eight concurrent copies of one signed request (one accepted), body/query/header tampering, fragmented bodies, revocation while a body is pending, unsafe credential files, secret-free access logs, and a deliberately delayed reload while health and token requests remain responsive.
+- Deterministic parser/range/JSON fuzzing passed 100,000 mutations with authentication-header seeds. An instrumented fuzz run and instrumented authentication unit tests also passed locally, with leak detection disabled for those standalone sandbox runs.
+- Credential generation and authenticated client CLI checks succeeded against an isolated server. Six exploratory loopback workloads each ran three trials of 1,000 requests at concurrency 16, with 20 warmup requests, logging disabled, a 10,000-request connection cap, and 65,536 nonce entries: all 18,000 measured requests succeeded. Median throughput was 7,770 requests/s for public status, 7,925 for bearer status, 8,725 versus 6,850 for public versus signed small echo, and 7,863 versus 6,103 for public versus signed 12,014-byte echo. These sequential measurements include Python client signing and are not a server-only crypto cost or capacity claim.
+- Replay state is per process and resets at restart. Full stores reject new signed requests with 503; sizing must cover the retention period. OpenSSL 3 libcrypto is required even when HTTPS is disabled. Runtime credential examples contain paths only; no real secrets were generated in the repository.
+
 ## Small generated response optimization
 
 - Small generated response bodies now fit beside their headers in the existing connection output buffer. This avoids a separate body write while retaining stable buffers for partial HTTP/TLS writes. Body-byte accounting excludes headers and HEAD bodies; shutdown header edits also adjust the body boundary.

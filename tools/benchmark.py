@@ -12,6 +12,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from auth_client import auth_headers, load_credential
 
 
 def percentile(values, fraction):
@@ -23,9 +24,17 @@ def percentile(values, fraction):
     return values[lower] + (values[upper] - values[lower]) * (index - lower)
 
 
-def run(host, port, path, concurrency, requests, warmup, reuse, context=None, paths=None, accept_encoding=None):
+def run(host, port, path, concurrency, requests, warmup, reuse, context=None, paths=None, accept_encoding=None, method="GET", body=None, credential=None):
     targets = paths or [path]
     headers = {"Accept-Encoding": accept_encoding} if accept_encoding is not None else {}
+    content_type = 'application/json' if method == 'POST' else ''
+    if content_type:
+        headers['Content-Type'] = content_type
+    def request_headers(target):
+        result = dict(headers)
+        if credential:
+            result.update(auth_headers(credential, method, target, body or b'', content_type))
+        return result
     def connection():
         cls = http.client.HTTPSConnection if context else http.client.HTTPConnection
         kwargs = {'timeout': 10}
@@ -37,7 +46,8 @@ def run(host, port, path, concurrency, requests, warmup, reuse, context=None, pa
     for index in range(warmup):
         client = connection()
         try:
-            client.request('GET', targets[index % len(targets)], headers={**headers, 'Connection': 'close'})
+            target = targets[index % len(targets)]
+            client.request(method, target, body=body, headers={**request_headers(target), 'Connection': 'close'})
             response = client.getresponse()
             response.read()
             if response.status != 200:
@@ -57,13 +67,14 @@ def run(host, port, path, concurrency, requests, warmup, reuse, context=None, pa
                 try:
                     if client is None:
                         client = connection()
-                    client.request('GET', targets[(first + offset) % len(targets)],
-                                   headers=headers if reuse else {**headers, 'Connection': 'close'})
+                    target = targets[(first + offset) % len(targets)]
+                    client.request(method, target, body=body,
+                                   headers=request_headers(target) if reuse else {**request_headers(target), 'Connection': 'close'})
                     response = client.getresponse()
-                    body = response.read()
+                    received = response.read()
                     if response.status != 200:
                         raise RuntimeError(f'HTTP {response.status}')
-                    total_bytes += len(body)
+                    total_bytes += len(received)
                     latencies.append((time.perf_counter() - start) * 1000)
                     if not reuse:
                         client.close()
@@ -90,6 +101,9 @@ def run(host, port, path, concurrency, requests, warmup, reuse, context=None, pa
         'scheme': 'https' if context else 'http', 'host': host, 'port': port,
         'path': path if paths is None else None,
         'paths_sha256': hashlib.sha256(('\n'.join(targets) + '\n').encode()).hexdigest() if paths else None,
+        'method': method, 'authentication': credential['kind'] if credential else None,
+        'body_sha256': hashlib.sha256(body).hexdigest() if body is not None else None,
+        'body_length': len(body) if body is not None else 0,
         'path_count': len(targets), 'concurrency': concurrency, 'requests': requests,
         'keep_alive': reuse, 'warmup': warmup, 'accept_encoding': accept_encoding, 'completed': len(latencies),
         'errors': len(errors), 'error_samples': errors[:5],
@@ -118,9 +132,10 @@ def summary(trials):
 
 def workload(result):
     trial = result['trials'][0] if 'trials' in result else result
-    return {key: trial.get(key, 'http' if key == 'scheme' else 1 if key == 'path_count' else None)
+    return {key: trial.get(key, 'http' if key == 'scheme' else 'GET' if key == 'method' else 1 if key == 'path_count' else 0 if key == 'body_length' else None)
             for key in ('scheme', 'host', 'port', 'path', 'paths_sha256', 'path_count',
-                        'concurrency', 'requests', 'keep_alive', 'warmup', 'accept_encoding')}
+                        'concurrency', 'requests', 'keep_alive', 'warmup', 'accept_encoding',
+                        'method', 'authentication', 'body_sha256', 'body_length')}
 
 
 def normalized(result):
@@ -149,6 +164,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--host', default='127.0.0.1')
     parser.add_argument('--port', type=int, default=8080)
+    parser.add_argument('--method', choices=['GET', 'POST'], default='GET')
+    parser.add_argument('--body-file', type=Path, help='request payload (maximum 16 KiB)')
+    parser.add_argument('--credential', type=Path, help='private client credential file; secrets are not saved')
     parser.add_argument('--path', default='/health')
     parser.add_argument('--paths-file', type=Path, help='one request path per line, cycled across requests')
     parser.add_argument('--concurrency', type=int, default=16)
@@ -187,13 +205,17 @@ def main():
         config = ({'path': str(args.config),
                    'sha256': hashlib.sha256(args.config.read_bytes()).hexdigest()}
                   if args.config else None)
+        body = args.body_file.read_bytes() if args.body_file else b'{}' if args.method == 'POST' else None
+        if body is not None and len(body) > 16384:
+            parser.error('body exceeds 16 KiB')
+        credential = load_credential(args.credential) if args.credential else None
         context = ssl.create_default_context(cafile=str(args.ca_file) if args.ca_file else None) if args.https else None
-    except (OSError, ssl.SSLError) as error:
+    except (OSError, ssl.SSLError, ValueError) as error:
         parser.error(str(error))
     trials = []
     for number in range(args.trials):
         result = run(args.host, args.port, args.path, args.concurrency, args.requests,
-                     args.warmup, not args.fresh, context, paths, args.accept_encoding)
+                     args.warmup, not args.fresh, context, paths, args.accept_encoding, args.method, body, credential)
         trials.append(result)
         print(f'trial {number + 1}/{args.trials}: {result["completed"]}/{args.requests} completed, '
               f'{result["errors"]} errors, {result["successful_requests_per_s"]} req/s', file=sys.stderr)

@@ -122,5 +122,5 @@ These are separate extensions after the first HTTP/1.1 release:
 
 ## Current progress
 
-Phases 1–5 are implemented and locally validated. The next planned enhancement
-is **Phase 6: authentication and cryptography**.
+Phases 1–6 are implemented and locally validated. The next planned enhancement
+is **Phase 7: deployment support**.

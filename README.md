@@ -5,7 +5,7 @@ bounded asynchronous file work, metrics, graceful shutdown, and optional HTTPS.
 
 ## Build and run
 
-On Ubuntu, install a compiler, Make, Python 3, and OpenSSL development headers:
+On Ubuntu, install a compiler, Make, Python 3, and OpenSSL 3 development headers:
 
 ```sh
 sudo apt install build-essential python3 libssl-dev openssl
@@ -24,7 +24,7 @@ The original positional interface also works, with the cache disabled:
 # Arguments: port, document root, connection limit, shutdown deadline in ms.
 ```
 
-To build without OpenSSL:
+To build without HTTPS support (OpenSSL 3 libcrypto remains required):
 
 ```sh
 make clean
@@ -47,7 +47,7 @@ certificate/key pair fail startup. Configuration is loaded once at startup.
 | document_root | public | Static content directory |
 | max_connections | 1024 | Active connection cap |
 | shutdown_ms | 5000 | Connection drain deadline |
-| request_timeout_ms | 5000 | Header/idle/handshake deadline |
+| request_timeout_ms | 5000 | Header/body/idle/handshake deadline |
 | response_timeout_ms | 30000 | Response deadline |
 | max_requests | 100 | Responses allowed per connection |
 | file_workers | 4 | Disk workers; 1–16 |
@@ -59,6 +59,9 @@ certificate/key pair fail startup. Configuration is loaded once at startup.
 | cache_entries | 256 | Maximum resident entries; up to 4096 |
 | cache_ttl_ms | 1000 | Freshness window; 1–60000 ms |
 | tls_cert, tls_key | empty | PEM certificate chain and private key |
+| auth_credentials_file | empty | Private credentials outside document_root |
+| auth_timestamp_window_s | 60 | Signed timestamp tolerance; 1–300 seconds |
+| auth_nonce_entries | 4096 | Replay records; 1–65536 |
 
 `C_HTTP_ACCESS_LOG` overrides `access_log`. Allow enough OS file descriptors
 for client sockets, open files, and the reactor. Connection counts and queues
@@ -230,6 +233,175 @@ route table. The function receives the parsed request, bounded body, connection
 response buffer, and response descriptor. Returned body memory must remain valid
 until the response finishes; use literals, the supplied buffer, or the request
 body. Add body/media policy to `route_check` when introducing another body format.
+
+## Authentication and signed requests
+
+Phase 6 adds two protected demonstration routes:
+
+| Method | Route | Required authentication |
+| --- | --- | --- |
+| GET, HEAD | `/api/private/status` | Bearer token |
+| POST | `/api/private/echo` | HMAC-SHA-256 signed request |
+
+Existing health, metrics, status, echo, and static routes keep their public
+policies. Protected routes return 401 when credentials are not configured; they
+never become public. A bearer token cannot replace a required signature.
+
+### Generate credentials and run locally
+
+Create a private directory outside `public/`. The following files are ignored
+by Git. Each generator invocation creates new files and refuses overwrites:
+
+```sh
+mkdir -p .secrets
+chmod 700 .secrets
+python3 tools/create_credentials.py --kind token --id token-a \
+  --client-file .secrets/token.auth-client --server-file .secrets/token.credentials
+python3 tools/create_credentials.py --kind hmac --id sign-a \
+  --client-file .secrets/sign.auth-client --server-file .secrets/sign.credentials
+(umask 077; cat .secrets/token.credentials .secrets/sign.credentials > .secrets/server.credentials)
+make
+./http_server --config server-auth.conf
+```
+
+Stop any previous server on port 8080 first. In another terminal:
+
+```sh
+# No credentials: expect 401.
+curl -i http://127.0.0.1:8080/api/private/status
+# Token authentication: expect 200 and status JSON.
+python3 tools/auth_client.py --credential .secrets/token.auth-client
+# Signed JSON echo: expect 200 and {}.
+python3 tools/auth_client.py --credential .secrets/sign.auth-client
+# Sign an exact JSON file:
+python3 tools/auth_client.py --credential .secrets/sign.auth-client --body-file payload.json
+```
+
+The generator uses 32 random bytes for each independent secret and prints no
+secrets. The client file contains the secret. The server file contains the token
+secret's SHA-256 digest, or the actual HMAC key needed for verification. Records
+use `token ID HEX_DIGEST` or `hmac ID HEX_KEY`. IDs contain 1–32 ASCII letters,
+digits, underscores, or hyphens, and must be unique across both types. Digests and
+keys use exactly 64 lowercase hexadecimal characters. Up to 16 records are
+accepted; comments start with `#`, and an empty file revokes all credentials.
+
+The server requires a regular credential file owned by its effective user,
+with no group/other permissions, one hard link, and no final symlink. It must be
+outside the resolved document root and at most 8 KiB. Use private parent
+directories and publish updates by atomic file replacement. Invalid configured
+credentials prevent startup.
+
+### Configuration and rotation
+
+The example `server-auth.conf` points to `.secrets/server.credentials`:
+
+```ini
+auth_credentials_file = .secrets/server.credentials
+auth_timestamp_window_s = 60
+auth_nonce_entries = 4096
+```
+
+The timestamp window supports 1–300 seconds and the replay store 1–65,536 entries.
+These are startup settings. SIGHUP reloads credentials only, using the bounded
+file-worker pool. It preserves the current credentials if loading fails and
+preserves replay records on success. Requests read credential files only at
+startup or reload, never on the authentication path.
+
+To rotate, generate a new ID, atomically publish a file containing old and new
+records, then send SIGHUP to the server PID. Update clients, publish a file with
+the old record removed, and send SIGHUP again. Check stderr or the authentication
+reload counters to confirm success. Removing an ID rejects subsequent checks,
+including requests on existing keep-alive connections and signed requests still
+reading their bodies. Already authenticated requests may finish.
+
+### Signing contract
+
+Signed requests send these headers, once each:
+
+```text
+X-Auth-Key-Id: <credential ID>
+X-Auth-Timestamp: <Unix seconds, decimal, no leading zeroes>
+X-Auth-Nonce: <16 random bytes as 32 lowercase hexadecimal characters>
+X-Auth-Signature: <HMAC as 64 lowercase hexadecimal characters>
+```
+
+The MAC input is the following ASCII fields, each followed by a newline,
+including the last field:
+
+```text
+C-HTTP-HMAC-V1
+key-id
+timestamp
+nonce
+method
+original-request-target
+content-type
+content-encoding
+content-length
+body-sha256
+```
+
+The method and target are exact parsed bytes. The target includes the query
+string, original percent encoding, and original parameter order. Selected header
+values have only surrounding spaces/tabs removed; a missing header contributes
+an empty field. Content-Length is the actual bounded body length as normalized
+decimal, and the body digest is lowercase hexadecimal SHA-256 of exact bytes.
+JSON whitespace is significant. Host is not signed; provision separate signing
+keys for different services. Signing happens before the server strips queries.
+The server uses OpenSSL SHA-256, HMAC, and constant-time secret comparisons.
+
+Header and routing checks precede body allocation. Signature verification and
+nonce reservation happen after the complete body arrives and before the handler
+runs. Failed signatures do not consume nonce capacity. Successfully authenticated
+requests consume their nonce even when the handler rejects the JSON body.
+
+### Replay bounds, errors, and transport
+
+Replay records are scoped by credential ID and nonce, with keyed hash lookup.
+They survive at least `2 * timestamp_window + 1` seconds on the monotonic clock
+and until the original timestamp can no longer pass wall-clock validation.
+Cleanup retires at most 32 oldest entries per signed request. Conservative
+retention can keep records longer during clock changes. Backward clock movement
+observed during signing checks returns 503 until time catches up.
+
+An unexpired full store returns 503 and retains its replay records. Size it for
+all distinct signed requests during the retention period. With the default
+60-second window and 4,096 entries, a sustained workload can fill it at roughly
+34 signed requests/s. Larger workloads need a higher entry limit or a smaller
+window. At the maximum entry count, the replay structures use about 4 MiB.
+Replay state is per process, resets on restart, and is not shared across servers.
+
+Authentication failures return generic JSON 401 errors; malformed fields return
+400, oversized fields 431, and unsafe clock/capacity conditions 503. Early
+rejections and signature failures close the connection. Bearer failures send
+`WWW-Authenticate: Bearer`. Credentials, signatures, and auth headers are not
+logged. Metrics expose totals for accepted/rejected authentication, invalid
+signatures/timestamps, replays, capacity failures, and credential reloads.
+
+Use HTTPS for real credentials over a network: bearer tokens grant access to
+whoever possesses them, and HMAC authenticates without encrypting request data.
+The client accepts `--https --host localhost --ca-file dev-cert.pem` and verifies
+certificates. Plain HTTP in the commands above is for local loopback testing.
+
+### Authenticated benchmarks
+
+The benchmark tool now supports POST bodies and private client credentials:
+
+```sh
+python3 tools/benchmark.py --path /api/private/status \
+  --credential .secrets/token.auth-client --requests 1000 --trials 3
+python3 tools/benchmark.py --path /api/private/echo --method POST \
+  --credential .secrets/sign.auth-client --requests 500 --trials 3
+```
+
+POST defaults to `{}`; use `--body-file payload.json` for another payload.
+Every signed request, including warmup, gets a fresh nonce and signature. Results
+record method, authentication type, body length, and body digest without secrets.
+Saved comparisons require matching method, authentication, and payload. Compare
+public/authenticated summaries separately when assessing authentication overhead.
+Client signing is included in end-to-end latency. Repeated signed benchmark runs
+share the server's replay capacity until records expire; increase its limit for
+larger runs rather than treating expected 503 capacity responses as crypto faults.
 
 ## Precompressed gzip assets
 

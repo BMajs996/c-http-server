@@ -25,19 +25,26 @@ static int echo_handler(const struct http_request *r,const char *body,char *buff
     if(!json_valid(body,r->content_length))return 400;
     out->body=body;out->length=r->content_length;return 200;
 }
-static const struct { const char *path,*method,*allow;handler call; } routes[]={
-    {"/health","GET","GET, HEAD",status_handler},
-    {"/metrics","GET","GET, HEAD",metrics_handler},
-    {"/api/status","GET","GET, HEAD",status_handler},
-    {"/api/echo","POST","POST",echo_handler}
+static const struct { const char *path,*method,*allow;handler call;auth_policy policy; } routes[]={
+    {"/health","GET","GET, HEAD",status_handler,AUTH_PUBLIC},
+    {"/metrics","GET","GET, HEAD",metrics_handler,AUTH_PUBLIC},
+    {"/api/status","GET","GET, HEAD",status_handler,AUTH_PUBLIC},
+    {"/api/echo","POST","POST",echo_handler,AUTH_PUBLIC},
+    {"/api/private/status","GET","GET, HEAD",status_handler,AUTH_BEARER},
+    {"/api/private/echo","POST","POST",echo_handler,AUTH_SIGNED}
 };
 static int find(const char *target) {
     for(size_t i=0;i<sizeof routes/sizeof routes[0];++i)if(path_equal(target,routes[i].path))return (int)i;
     return -1;
 }
+auth_policy route_auth(const char *target) {
+    int i=find(target);return i<0?AUTH_PUBLIC:routes[i].policy;
+}
 void route_error(int status,route_response *out) {
     out->status=status;out->type="application/json";
     switch(status) {
+    case 401:out->body="{\"error\":{\"status\":401,\"code\":\"unauthorized\"}}\n";break;
+    case 503:out->body="{\"error\":{\"status\":503,\"code\":\"auth_unavailable\"}}\n";break;
     case 400:out->body="{\"error\":{\"status\":400,\"code\":\"bad_request\"}}\n";break;
     case 404:out->body="{\"error\":{\"status\":404,\"code\":\"not_found\"}}\n";break;
     case 405:out->body="{\"error\":{\"status\":405,\"code\":\"method_not_allowed\"}}\n";break;

@@ -10,6 +10,7 @@ void config_defaults(void) {
     config = (server_config){.port=8080,.max_connections=1024,.shutdown_ms=5000,
         .request_timeout_ms=5000,.response_timeout_ms=30000,.max_requests=100,
         .file_workers=4,.file_job_limit=64,.log_queue_limit=1024,
+        .auth_timestamp_window_s=60,.auth_nonce_entries=4096,
         .cache_max_file_bytes=65536,.cache_entries=256,.cache_ttl_ms=1000};
     strcpy(config.document_root,"public");strcpy(config.access_log,"-");
 }
@@ -26,9 +27,12 @@ int config_load(const char *path) {
         {"response_timeout_ms",&config.response_timeout_ms,1,300000},{"max_requests",&config.max_requests,1,100000},
         {"file_workers",&config.file_workers,1,16},{"file_job_limit",&config.file_job_limit,1,1024},
         {"log_queue_limit",&config.log_queue_limit,1,8192},{"cache_entries",&config.cache_entries,1,4096},
-        {"cache_ttl_ms",&config.cache_ttl_ms,1,60000}
+        {"cache_ttl_ms",&config.cache_ttl_ms,1,60000},
+        {"auth_timestamp_window_s",&config.auth_timestamp_window_s,1,300},
+        {"auth_nonce_entries",&config.auth_nonce_entries,1,65536}
     };
     struct text_option { const char *name; char *value; size_t size; } texts[]={
+        {"auth_credentials_file",config.auth_credentials_file,sizeof config.auth_credentials_file},
         {"document_root",config.document_root,sizeof config.document_root},
         {"access_log",config.access_log,sizeof config.access_log},
         {"tls_cert",config.tls_cert,sizeof config.tls_cert},{"tls_key",config.tls_key,sizeof config.tls_key}
@@ -46,7 +50,7 @@ int config_load(const char *path) {
         strcpy(keys[key_count++],key);
         int found=0;
         for(size_t i=0;i<sizeof texts/sizeof texts[0];++i)if(!strcmp(key,texts[i].name)) {
-            if(strlen(value)>=texts[i].size || (!*value && strncmp(key,"tls_",4)))goto invalid;
+            if(strlen(value)>=texts[i].size || (!*value && strncmp(key,"tls_",4) && strcmp(key,"auth_credentials_file")))goto invalid;
             strcpy(texts[i].value,value);found=1;break;
         }
         if(found)continue;
