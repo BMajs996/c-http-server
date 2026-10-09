@@ -1,0 +1,25 @@
+# Numeric IPv4 or IPv6. Loopback by default; change intentionally for remote access.
+bind_address = 127.0.0.1
+port = 8080
+document_root = /srv/c-http-server/public
+max_connections = 1024
+shutdown_ms = 5000
+request_timeout_ms = 5000
+response_timeout_ms = 30000
+max_requests = 100
+file_workers = 4
+file_job_limit = 64
+log_queue_limit = 1024
+# Journal collects stderr; file logging needs a writable service directory.
+access_log = -
+cache_bytes = 16777216
+cache_max_file_bytes = 65536
+cache_entries = 256
+cache_ttl_ms = 1000
+# Protected routes remain protected when no credentials are configured.
+auth_credentials_file =
+auth_timestamp_window_s = 60
+auth_nonce_entries = 4096
+# Set both paths for HTTPS, e.g. /etc/c-http-server/tls/server.crt and server.key.
+tls_cert =
+tls_key =

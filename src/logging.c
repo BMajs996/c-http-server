@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 #define LOG_LIMIT config.log_queue_limit
@@ -59,6 +60,28 @@ static void *log_writer(void *unused) {
     }
     return NULL;
 }
+int logging_check(void) {
+    const char *path=getenv("C_HTTP_ACCESS_LOG");if(!path)path=config.access_log;
+    if(!strcmp(path,"0"))return 0;
+    if(!strcmp(path,"-")) {
+        int flags=fcntl(STDERR_FILENO,F_GETFL);
+        if(flags>=0 && (flags&O_ACCMODE)!=O_RDONLY)return 0;
+        fprintf(stderr,"configuration: stderr is not writable\n");return -1;
+    }
+    int fd=open(path,O_WRONLY|O_APPEND|O_NONBLOCK|O_CLOEXEC);
+    if(fd>=0){close(fd);return 0;}
+    if(errno!=ENOENT){perror("access log");return -1;}
+    /* Check a missing file's parent without creating it. */
+    char parent[2048];
+    if(strlen(path)>=sizeof parent){errno=ENAMETOOLONG;perror("access log");return -1;}
+    strcpy(parent,path);char *slash=strrchr(parent,'/');
+    if(!slash)strcpy(parent,".");else if(slash==parent)slash[1]=0;else *slash=0;
+    struct stat stamp;
+    if(stat(parent,&stamp)<0 || !S_ISDIR(stamp.st_mode) || access(parent,W_OK|X_OK)<0) {
+        fprintf(stderr,"configuration: access log parent is not a writable directory\n");return -1;
+    }
+    return 0;
+}
 int logging_init(void) {
     const char *path = getenv("C_HTTP_ACCESS_LOG");
     if (!path) path = config.access_log;
@@ -66,6 +89,16 @@ int logging_init(void) {
     if (!path || !strcmp(path, "-")) {
         /* Reopen Linux stderr as an independent nonblocking description. */
         log_fd = open("/proc/self/fd/2", O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+        if(log_fd<0 && errno==ENXIO) {
+            /* Journal stderr is a Unix stream socket: /proc cannot reopen it.
+             * Dup shares its file description, so diagnostics also become
+             * nonblocking. Request logging retains its bounded queue. */
+            log_fd=fcntl(STDERR_FILENO,F_DUPFD_CLOEXEC,0);
+            if(log_fd>=0) {
+                int flags=fcntl(log_fd,F_GETFL);
+                if(flags<0 || fcntl(log_fd,F_SETFL,flags|O_NONBLOCK)<0){close(log_fd);log_fd=-1;}
+            }
+        }
         if (log_fd < 0) { perror("reopen stderr for logging"); return -1; }
     } else log_fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_NONBLOCK | O_CLOEXEC, 0600);
     if (log_fd < 0) { perror("access log"); return -1; }

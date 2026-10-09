@@ -1,6 +1,7 @@
 #include "router.h"
 #include "json.h"
 #include "metrics.h"
+#include "deployment.h"
 #include <string.h>
 #include <strings.h>
 static int path_equal(const char *target,const char *path) {
@@ -9,14 +10,21 @@ static int path_equal(const char *target,const char *path) {
 int route_is_api(const char *target) {
     return path_equal(target,"/api") || !strncmp(target,"/api/",5);
 }
+int route_no_store(const char *target) { return route_is_api(target) || path_equal(target,"/ready"); }
 typedef int (*handler)(const struct http_request *,const char *,char *,size_t,route_response *);
 static int status_handler(const struct http_request *r,const char *body,char *buffer,size_t capacity,route_response *out) {
     (void)r;(void)body;(void)buffer;(void)capacity;
     out->body="{\"status\":\"ok\"}\n";return 200;
 }
+static int ready_handler(const struct http_request *r,const char *body,char *buffer,size_t capacity,route_response *out) {
+    (void)r;(void)body;(void)buffer;(void)capacity;
+    int ready=deployment_ready();
+    out->body=ready?"{\"status\":\"ready\"}\n":"{\"status\":\"not_ready\"}\n";
+    return ready?200:503;
+}
 static int metrics_handler(const struct http_request *r,const char *body,char *buffer,size_t capacity,route_response *out) {
     (void)r;(void)body;
-    out->length=metrics_render(buffer,capacity);out->body=buffer;
+    out->length=metrics_render(buffer,capacity);out->body=out->length?buffer:NULL;
     out->type="text/plain; version=0.0.4; charset=utf-8";
     return out->length?200:500;
 }
@@ -26,6 +34,7 @@ static int echo_handler(const struct http_request *r,const char *body,char *buff
     out->body=body;out->length=r->content_length;return 200;
 }
 static const struct { const char *path,*method,*allow;handler call;auth_policy policy; } routes[]={
+    {"/ready","GET","GET, HEAD",ready_handler,AUTH_PUBLIC},
     {"/health","GET","GET, HEAD",status_handler,AUTH_PUBLIC},
     {"/metrics","GET","GET, HEAD",metrics_handler,AUTH_PUBLIC},
     {"/api/status","GET","GET, HEAD",status_handler,AUTH_PUBLIC},
@@ -76,7 +85,7 @@ int route_dispatch(const struct http_request *r,const char *body,char *buffer,si
     int i=find(r->target);if(i<0)return 0;
     memset(out,0,sizeof *out);out->type="application/json";out->allow=routes[i].allow;
     out->status=routes[i].call(r,body,buffer,capacity,out);
-    if(out->status!=200)route_error(out->status,out);
+    if(out->status!=200 && !out->body)route_error(out->status,out);
     else if(!out->length)out->length=strlen(out->body);
     return 1;
 }

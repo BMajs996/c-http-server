@@ -4,6 +4,7 @@
 /fuzz_libfuzzer
 /test_file_cache
 /test_auth
+/test_deployment
 /cache_lookup_benchmark
 *.o
 

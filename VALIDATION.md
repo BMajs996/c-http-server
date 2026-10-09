@@ -1,5 +1,14 @@
 # Validation for configuration, cache, CI, and HTTPS
 
+## Phase 7: deployment support
+
+- Added numeric IPv4/IPv6 binding (default loopback, IPv6-only IPv6 listeners), GET/HEAD `/ready`, no-store responses, and `c_http_ready`. Readiness starts false, becomes true after complete initialization, and clears before draining. Unit checks verify the explicit 503 JSON response before readiness and after it is cleared; live probes during draining normally encounter a closed listener.
+- Added `--check-config` to validate configuration, document-root access, TLS loading, credentials, and log destination access without binding, spawning workers, creating log files, or sending notifications. Tests prove occupied ports do not affect this check and cover invalid addresses, missing inputs, and startup bind failure.
+- Filesystem and abstract Unix notification sockets receive READY and STOPPING messages. Invalid, unreachable, and full notification sockets reject startup without a Listening announcement. A full receiving queue test uses fresh senders to avoid confusing sender-buffer exhaustion with receiver saturation. Journal-style Unix stream stderr logging records exact response body bytes and completes without blocking request handling.
+- All 65 TLS-enabled integration tests, cache/authentication/deployment C unit tests, two precompression tests, and three authentication-tool tests passed under AddressSanitizer and UndefinedBehaviorSanitizer with leak detection enabled. Instrumented deterministic parser/range/JSON fuzzing passed 100,000 mutations. Strict TLS-enabled compilation passed. The final strict HTTP-only suite also passed (59 integration tests passed, six HTTPS tests skipped), together with the unit and tool tests.
+- The supplied systemd unit passed `systemd-analyze verify` with its executable path substituted for the local build. No service was installed or started under systemd, and dedicated-account filesystem access must be checked on the deployment host. The deployment guide includes those installation and validation commands. The configured five-second connection drain deadline does not bound a worker stuck in filesystem I/O; the service provides a fifteen-second outer stop timeout.
+
+
 ## Phase 6: authentication and request signing
 
 - Bearer-protected status and HMAC-SHA-256 protected echo routes now use bounded credential loading, constant-time secret comparison, strict authentication headers, exact-byte versioned signing, timestamp checks, and bounded nonce replay tracking. Credential-only SIGHUP reloads run in the file-worker pool, preserve replay state, and retain the old credentials on failure.

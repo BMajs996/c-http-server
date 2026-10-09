@@ -226,10 +226,10 @@ static void prepare(connection *c) {
             }
         }
     }
-    if(route_is_api(c->request.target))strcpy(c->extra_headers,"Cache-Control: no-store\r\n");
+    if(route_no_store(c->request.target))strcpy(c->extra_headers,"Cache-Control: no-store\r\n");
     if(c->status==401 && route_auth(c->request.target)==AUTH_BEARER)
         strcat(c->extra_headers,"WWW-Authenticate: Bearer realm=\"api\"\r\n");
-    if(c->status==405)snprintf(c->extra_headers,sizeof c->extra_headers,"%sAllow: %s\r\n",route_is_api(c->request.target)?"Cache-Control: no-store\r\n":"",c->allow?c->allow:"GET, HEAD");
+    if(c->status==405)snprintf(c->extra_headers,sizeof c->extra_headers,"%sAllow: %s\r\n",route_no_store(c->request.target)?"Cache-Control: no-store\r\n":"",c->allow?c->allow:"GET, HEAD");
     int n = snprintf(c->output, sizeof c->output,
         "%s %d %s\r\nContent-Type: %s\r\nContent-Length: %" PRIuMAX "\r\n"
         "X-Content-Type-Options: nosniff\r\nConnection: %s\r\n%s\r\n",

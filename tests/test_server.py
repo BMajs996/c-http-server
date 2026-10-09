@@ -926,6 +926,148 @@ class ServerTests(unittest.TestCase):
                     if proc.poll() is None:self.finish_extra(proc)
 
 
+    def test_readiness(self):
+        status, headers, body = self.request('/ready?probe=1')
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {'status': 'ready'})
+        self.assertEqual(headers['Cache-Control'], 'no-store')
+        status, headers, body = self.request('/ready', 'HEAD')
+        self.assertEqual(status, 200)
+        self.assertEqual(body, b'')
+        self.assertEqual(int(headers['Content-Length']), len(b'{"status":"ready"}\n'))
+        status, headers, _ = self.request('/ready', 'POST')
+        self.assertEqual(status, 405)
+        self.assertEqual(headers['Allow'], 'GET, HEAD')
+        self.assertEqual(self.metric_values(self.request('/metrics')[2])['c_http_ready'], 1)
+
+    def deployment_config(self, name, **settings):
+        path = self.base / (name + '.conf')
+        values = {'port': 8080, 'document_root': str(self.root), 'access_log': '0'}
+        values.update(settings)
+        path.write_text(''.join(f'{key} = {value}\n' for key, value in values.items()))
+        return path
+
+    def test_check_config_and_startup_failures(self):
+        env = {**os.environ, 'C_HTTP_ACCESS_LOG': '0', 'NOTIFY_SOCKET': '/nonexistent/notify'}
+        with socket.socket() as occupied:
+            occupied.bind(('127.0.0.1', 0)); occupied.listen()
+            path = self.deployment_config('occupied', port=occupied.getsockname()[1])
+            result = subprocess.run([str(PROJECT/'http_server'), '--check-config', str(path)], env=env, capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = subprocess.run([str(PROJECT/'http_server'), '--config', str(path)], env=env, capture_output=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(b'Cannot bind', result.stderr)
+        for host in ['localhost', '[::1]', '::1%lo', '999.0.0.1', '']:
+            path = self.deployment_config('bad-address', bind_address=host)
+            result = subprocess.run([str(PROJECT/'http_server'), '--check-config', str(path)], env=env, capture_output=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0, host)
+        log = self.base / 'check-only.log'
+        path = self.deployment_config('check-log', access_log=str(log))
+        env.pop('C_HTTP_ACCESS_LOG')
+        result = subprocess.run([str(PROJECT/'http_server'), '--check-config', str(path)], env=env, capture_output=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(log.exists())
+        for settings in [{'document_root': str(self.base/'missing')}, {'access_log': str(self.base/'missing'/'log')}, {'auth_credentials_file': str(self.base/'missing-credentials')}]:
+            path = self.deployment_config('bad-input', **settings)
+            result = subprocess.run([str(PROJECT/'http_server'), '--check-config', str(path)], env=env, capture_output=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0, settings)
+
+    def test_numeric_bind_addresses(self):
+        for host, family in [('127.0.0.2', socket.AF_INET), ('0.0.0.0', socket.AF_INET), ('::1', socket.AF_INET6)]:
+            with self.subTest(host=host):
+                try:
+                    with socket.socket(family) as probe:
+                        probe.bind((host, 0)); port = probe.getsockname()[1]
+                except OSError:
+                    if family == socket.AF_INET6: continue
+                    raise
+                path = self.deployment_config('bind', port=port, bind_address=host)
+                proc = subprocess.Popen([str(PROJECT/'http_server'), '--config', str(path)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**os.environ, 'C_HTTP_ACCESS_LOG':'0'})
+                try:
+                    assert proc.stdout is not None
+                    line = proc.stdout.readline()
+                    self.assertTrue(line.startswith(b'Listening'), line)
+                    if family == socket.AF_INET6: self.assertIn(b'[::1]', line)
+                    client = http.client.HTTPConnection('127.0.0.1' if host == '0.0.0.0' else host, port, timeout=3)
+                    try:
+                        client.request('GET', '/ready'); response = client.getresponse()
+                        self.assertEqual(response.status, 200); response.read()
+                    finally: client.close()
+                finally: self.finish_extra(proc)
+
+    def test_systemd_notifications(self):
+        for abstract in [False, True]:
+            with self.subTest(abstract=abstract), socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as receiver:
+                name = str(self.base / ('notify-' + str(abstract)))
+                receiver.bind('\0' + name if abstract else name); receiver.settimeout(3)
+                with socket.socket() as probe:
+                    probe.bind(('127.0.0.1', 0)); port = probe.getsockname()[1]
+                path = self.deployment_config('notify', port=port)
+                env = {**os.environ, 'C_HTTP_ACCESS_LOG':'0', 'NOTIFY_SOCKET': '@' + name if abstract else name}
+                proc = subprocess.Popen([str(PROJECT/'http_server'), '--config', str(path)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+                try:
+                    assert proc.stdout is not None
+                    self.assertTrue(proc.stdout.readline().startswith(b'Listening'))
+                    self.assertIn(b'READY=1', receiver.recv(1024))
+                    self.assertEqual(self.request_extra(port, '/ready')[0], 200)
+                    proc.terminate()
+                    self.assertIn(b'STOPPING=1', receiver.recv(1024))
+                finally: self.finish_extra(proc)
+        path = self.deployment_config('notify-invalid', port=port)
+        for name in ['', '@', 'relative', '/nonexistent/notify', '/' + 'x'*108]:
+            result = subprocess.run([str(PROJECT/'http_server'), '--config', str(path)], capture_output=True, timeout=5, env={**os.environ, 'C_HTTP_ACCESS_LOG':'0', 'NOTIFY_SOCKET':name})
+            self.assertNotEqual(result.returncode, 0, name)
+            self.assertNotIn(b'Listening', result.stdout)
+
+    def test_notification_backpressure(self):
+        name = str(self.base / 'notify-full')
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as receiver:
+            receiver.bind(name)
+            # Fresh senders avoid exhausting a sender's buffer before the
+            # receiver queue fills, which would leave room for READY.
+            for _ in range(65536):
+                with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sender:
+                    sender.setblocking(False)
+                    try: sender.sendto(b'fill', name)
+                    except BlockingIOError: break
+            else: self.fail('Could not fill Unix notification queue')
+            with socket.socket() as probe:
+                probe.bind(('127.0.0.1', 0)); port = probe.getsockname()[1]
+            path = self.deployment_config('notify-full', port=port)
+            result = subprocess.run([str(PROJECT/'http_server'), '--config', str(path)], capture_output=True, timeout=5, env={**os.environ, 'C_HTTP_ACCESS_LOG':'0', 'NOTIFY_SOCKET':name})
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn(b'Listening', result.stdout)
+            self.assertIn(b'systemd readiness notification', result.stderr)
+
+    def test_journal_socket_logging(self):
+        with socket.socket() as probe:
+            probe.bind(('127.0.0.1', 0)); port = probe.getsockname()[1]
+        path = self.deployment_config('journal', port=port, access_log='-')
+        parent, child = socket.socketpair()
+        with parent, child:
+            parent.settimeout(5)
+            proc = subprocess.Popen([str(PROJECT/'http_server'), '--config', str(path)], stdout=subprocess.PIPE, stderr=child, env={**os.environ, 'C_HTTP_ACCESS_LOG':'-'})
+            child.close()
+            try:
+                assert proc.stdout is not None
+                self.assertTrue(proc.stdout.readline().startswith(b'Listening'))
+                self.assertEqual(self.request_extra(port, '/health', {'Connection':'close'})[0], 200)
+                proc.terminate(); proc.communicate(timeout=8)
+                data = b''
+                while True:
+                    part = parent.recv(4096)
+                    if not part: break
+                    data += part
+                records = [json.loads(line) for line in data.splitlines() if line.startswith(b'{')]
+                self.assertEqual(len(records), 1, data)
+                self.assertEqual(records[0]['path'], '/health')
+                self.assertEqual(records[0]['body_bytes_sent'], len(b'{"status":"ok"}\n'))
+                self.assertTrue(records[0]['complete'])
+                self.assertNotIn(b'runtime error:', data)
+                self.assertNotIn(b'ERROR: AddressSanitizer', data)
+            finally:
+                if proc.poll() is None: proc.kill(); proc.communicate()
+
     def launch_config(self, settings):
         with socket.socket() as probe:
             probe.bind(('127.0.0.1',0));port=probe.getsockname()[1]

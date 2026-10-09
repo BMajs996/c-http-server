@@ -2,6 +2,7 @@
 #define LOGGING_H
 #include <stdint.h>
 #include <stddef.h>
+int logging_check(void);
 int logging_init(void);
 void logging_close(void);
 uint64_t logging_dropped(void);

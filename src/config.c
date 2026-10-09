@@ -12,6 +12,7 @@ void config_defaults(void) {
         .file_workers=4,.file_job_limit=64,.log_queue_limit=1024,
         .auth_timestamp_window_s=60,.auth_nonce_entries=4096,
         .cache_max_file_bytes=65536,.cache_entries=256,.cache_ttl_ms=1000};
+    strcpy(config.bind_address,"127.0.0.1");
     strcpy(config.document_root,"public");strcpy(config.access_log,"-");
 }
 static char *trim(char *value) {
@@ -32,6 +33,7 @@ int config_load(const char *path) {
         {"auth_nonce_entries",&config.auth_nonce_entries,1,65536}
     };
     struct text_option { const char *name; char *value; size_t size; } texts[]={
+        {"bind_address",config.bind_address,sizeof config.bind_address},
         {"auth_credentials_file",config.auth_credentials_file,sizeof config.auth_credentials_file},
         {"document_root",config.document_root,sizeof config.document_root},
         {"access_log",config.access_log,sizeof config.access_log},

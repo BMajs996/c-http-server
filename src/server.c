@@ -10,6 +10,7 @@
 #include "config.h"
 #include "file_cache.h"
 #include "transport.h"
+#include "deployment.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -53,15 +54,20 @@ static void advance(int epoll_fd, connection **slot, unsigned index) {
 }
 int main(int argc, char **argv) {
     config_defaults();
-    if (argc >= 2 && !strcmp(argv[1], "--config")) {
+    if (argc >= 2 && (!strcmp(argv[1], "--config") || !strcmp(argv[1], "--check-config"))) {
         if (argc != 3 || config_load(argv[2]) < 0) return EXIT_FAILURE;
+        if(!strcmp(argv[1],"--check-config")) {
+            if(deployment_check_config()<0)return EXIT_FAILURE;
+            puts("Configuration inputs validated (port availability and runtime resources are not checked)");
+            return EXIT_SUCCESS;
+        }
     } else {
         long port_value = argc >= 2 ? number(argv[1], 65535) : config.port;
         long limit_value = argc >= 4 ? number(argv[3], 16384) : config.max_connections;
         long grace_value = argc >= 5 ? number(argv[4], 60000) : config.shutdown_ms;
         if (argc > 5 || port_value < 0 || limit_value < 0 || grace_value < 0 ||
             (argc >= 3 && strlen(argv[2]) >= sizeof config.document_root)) {
-            fprintf(stderr, "Usage: %s [port] [document-root] [max-connections] [shutdown-ms]\n       %s --config server.conf\n", argv[0], argv[0]);
+            fprintf(stderr, "Usage: %s [port] [document-root] [max-connections] [shutdown-ms]\n       %s --config server.conf\n       %s --check-config server.conf\n", argv[0], argv[0], argv[0]);
             return EXIT_FAILURE;
         }
         config.port=(unsigned)port_value; config.max_connections=(unsigned)limit_value;
@@ -69,6 +75,10 @@ int main(int argc, char **argv) {
         if(argc>=3)strcpy(config.document_root,argv[2]);
     }
     long port=config.port, limit=config.max_connections, grace_ms=config.shutdown_ms;
+    struct sockaddr_storage address;socklen_t address_length;
+    if(deployment_address(config.bind_address,config.port,&address,&address_length)<0) {
+        fprintf(stderr,"configuration: bind_address must be a numeric IPv4 or IPv6 address\n");return EXIT_FAILURE;
+    }
     /* Install signals before any thread starts. */
     struct sigaction action = {0};
     action.sa_handler = stop_server;
@@ -85,19 +95,20 @@ int main(int argc, char **argv) {
     root = open(config.document_root, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (root < 0) { perror("document root"); goto cleanup; }
     if(auth_init()<0){fprintf(stderr,"Authentication initialization failed: check credential file and limits\n");goto cleanup;}
-    server = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    server = socket(address.ss_family, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (server < 0) { perror("socket"); goto cleanup; }
     int reuse = 1;
     if (setsockopt(server, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof reuse) < 0) {
         perror("setsockopt"); goto cleanup;
     }
-    struct sockaddr_in address = {0};
-    address.sin_family = AF_INET;
-    address.sin_port = htons((unsigned short)port);
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    if (bind(server, (struct sockaddr *)&address, sizeof address) < 0 || listen(server, 256) < 0) {
-        perror("bind/listen"); goto cleanup;
+    if(address.ss_family==AF_INET6) {
+        int ipv6_only=1;
+        if(setsockopt(server,IPPROTO_IPV6,IPV6_V6ONLY,&ipv6_only,sizeof ipv6_only)<0){perror("IPv6-only listener");goto cleanup;}
     }
+    if(bind(server,(struct sockaddr *)&address,address_length)<0) {
+        fprintf(stderr,"Cannot bind %s port %ld: %s\n",config.bind_address,port,strerror(errno));goto cleanup;
+    }
+    if(listen(server,256)<0){perror("listen");goto cleanup;}
     epoll_fd = epoll_create1(EPOLL_CLOEXEC);
     if (epoll_fd < 0) { perror("epoll_create1"); goto cleanup; }
     if (file_io_init() < 0) { fprintf(stderr, "file I/O pool initialization failed\n"); goto cleanup; }
@@ -112,7 +123,12 @@ int main(int argc, char **argv) {
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, server, &listener) < 0) {
         perror("epoll_ctl"); goto cleanup;
     }
-    printf("Listening on %s://127.0.0.1:%ld (epoll; max %ld connections; Ctrl+C to stop)\n", transport_tls_enabled()?"https":"http",port, limit);
+    if(atomic_load(&shutdown_requests)){failed=0;goto cleanup;}
+    deployment_set_ready(1);
+    if(deployment_notify("READY=1\nSTATUS=Accepting connections")<0){perror("systemd readiness notification");deployment_set_ready(0);goto cleanup;}
+    printf("Listening on %s://%s%s%s:%ld (epoll; max %ld connections; Ctrl+C to stop)\n",
+        transport_tls_enabled()?"https":"http",address.ss_family==AF_INET6?"[":"",
+        config.bind_address,address.ss_family==AF_INET6?"]":"",port,limit);
     fflush(stdout);
     failed = 0;
     int draining = 0;
@@ -120,7 +136,8 @@ int main(int argc, char **argv) {
     io_job *credential_reload=NULL;int reload_pending=0;
     while (!stopping) {
         if (atomic_load(&shutdown_requests) && !draining) {
-            draining = 1; metrics_draining();
+            draining = 1; metrics_draining();deployment_set_ready(0);
+            if(deployment_notify("STOPPING=1\nSTATUS=Draining active requests")<0)perror("systemd stopping notification");
             int64_t now = now_ms();
             if (now < 0) { failed = 1; break; }
             drain_deadline = now + grace_ms;
@@ -207,6 +224,10 @@ int main(int argc, char **argv) {
             if (slots[i] && (connection_expired(slots[i], now) || connection_waiting(slots[i]))) advance(epoll_fd, &slots[i], i);
     }
 cleanup:
+    if(deployment_ready()) {
+        deployment_set_ready(0);
+        if(deployment_notify("STOPPING=1\nSTATUS=Stopping")<0)perror("systemd stopping notification");
+    }
     stopping = 1;
     if (slots) {
         for (long i = 0; i < limit; ++i) if (slots[i]) connection_destroy(slots[i]);

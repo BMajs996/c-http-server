@@ -1,0 +1,107 @@
+# TYPE c_http_uptime_seconds gauge
+c_http_uptime_seconds 8
+# TYPE c_http_active_connections gauge
+c_http_active_connections 1
+# TYPE c_http_connection_limit gauge
+c_http_connection_limit 1024
+# TYPE c_http_draining gauge
+c_http_draining 0
+# TYPE c_http_ready gauge
+c_http_ready 1
+# TYPE c_http_connections_accepted_total counter
+c_http_connections_accepted_total 6161
+# TYPE c_http_connections_rejected_total counter
+c_http_connections_rejected_total 0
+# TYPE c_http_responses_completed_total counter
+c_http_responses_completed_total 50480
+# TYPE c_http_responses_aborted_total counter
+c_http_responses_aborted_total 8
+# TYPE c_http_body_bytes_sent_total counter
+c_http_body_bytes_sent_total 3048162756
+# TYPE c_http_timeouts_total counter
+c_http_timeouts_total 0
+# TYPE c_http_request_rejections_total counter
+c_http_request_rejections_total 0
+# TYPE c_http_responses_total counter
+c_http_responses_total{status_class="1xx"} 0
+c_http_responses_total{status_class="2xx"} 50480
+c_http_responses_total{status_class="3xx"} 0
+c_http_responses_total{status_class="4xx"} 0
+c_http_responses_total{status_class="5xx"} 0
+# TYPE c_http_file_jobs_outstanding gauge
+c_http_file_jobs_outstanding 0
+# TYPE c_http_file_jobs_queued gauge
+c_http_file_jobs_queued 0
+# TYPE c_http_file_jobs_running gauge
+c_http_file_jobs_running 0
+# TYPE c_http_file_jobs_completed_pending gauge
+c_http_file_jobs_completed_pending 0
+# TYPE c_http_file_job_limit gauge
+c_http_file_job_limit 64
+# TYPE c_http_file_jobs_submitted_total counter
+c_http_file_jobs_submitted_total 193
+# TYPE c_http_file_jobs_finished_total counter
+c_http_file_jobs_finished_total 193
+# TYPE c_http_log_queue_depth gauge
+c_http_log_queue_depth 0
+# TYPE c_http_log_queue_limit gauge
+c_http_log_queue_limit 1024
+# TYPE c_http_logs_written_total counter
+c_http_logs_written_total 0
+# TYPE c_http_logs_dropped_total counter
+c_http_logs_dropped_total 0
+# TYPE c_http_tls_enabled gauge
+c_http_tls_enabled 0
+# TYPE c_http_tls_handshakes_total counter
+c_http_tls_handshakes_total 0
+# TYPE c_http_tls_failed_handshakes_total counter
+c_http_tls_failed_handshakes_total 0
+# TYPE c_http_cache_bytes gauge
+c_http_cache_bytes 1629
+# TYPE c_http_cache_byte_limit gauge
+c_http_cache_byte_limit 16777216
+# TYPE c_http_cache_entries gauge
+c_http_cache_entries 2
+# TYPE c_http_cache_hits_total counter
+c_http_cache_hits_total 18115
+# TYPE c_http_cache_misses_total counter
+c_http_cache_misses_total 193
+# TYPE c_http_cache_evictions_total counter
+c_http_cache_evictions_total 0
+# TYPE c_http_cache_expirations_total counter
+c_http_cache_expirations_total 2
+# TYPE c_http_cache_bypasses_total counter
+c_http_cache_bypasses_total 0
+# TYPE c_http_auth_credentials gauge
+c_http_auth_credentials 0
+# TYPE c_http_auth_nonce_entries gauge
+c_http_auth_nonce_entries 0
+# TYPE c_http_auth_nonce_limit gauge
+c_http_auth_nonce_limit 4096
+# TYPE c_http_auth_accepted_total counter
+c_http_auth_accepted_total 0
+# TYPE c_http_auth_rejected_total counter
+c_http_auth_rejected_total 0
+# TYPE c_http_auth_invalid_signatures_total counter
+c_http_auth_invalid_signatures_total 0
+# TYPE c_http_auth_invalid_timestamps_total counter
+c_http_auth_invalid_timestamps_total 0
+# TYPE c_http_auth_replays_total counter
+c_http_auth_replays_total 0
+# TYPE c_http_auth_capacity_rejections_total counter
+c_http_auth_capacity_rejections_total 0
+# TYPE c_http_auth_reloads_total counter
+c_http_auth_reloads_total 0
+# TYPE c_http_auth_reload_failures_total counter
+c_http_auth_reload_failures_total 0
+# TYPE c_http_response_duration_seconds histogram
+c_http_response_duration_seconds_bucket{le="0.001"} 48798
+c_http_response_duration_seconds_bucket{le="0.005"} 50276
+c_http_response_duration_seconds_bucket{le="0.010"} 50379
+c_http_response_duration_seconds_bucket{le="0.025"} 50454
+c_http_response_duration_seconds_bucket{le="0.050"} 50479
+c_http_response_duration_seconds_bucket{le="0.100"} 50480
+c_http_response_duration_seconds_bucket{le="1.000"} 50480
+c_http_response_duration_seconds_bucket{le="+Inf"} 50480
+c_http_response_duration_seconds_sum 9.630
+c_http_response_duration_seconds_count 50480

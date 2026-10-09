@@ -1,0 +1,43 @@
+[Unit]
+Description=C HTTP server
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=30
+StartLimitBurst=5
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=c-http-server
+Group=c-http-server
+WorkingDirectory=/srv/c-http-server
+ExecStartPre=/usr/local/bin/c-http-server --check-config /etc/c-http-server/server.conf
+ExecStart=/usr/local/bin/c-http-server --config /etc/c-http-server/server.conf
+# Credential reload only; completion is reported in logs and metrics.
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2
+TimeoutStartSec=15
+# Example configuration drains for 5 seconds; allow worker/log cleanup as well.
+TimeoutStopSec=15
+KillSignal=SIGTERM
+KillMode=control-group
+LimitNOFILE=8192
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

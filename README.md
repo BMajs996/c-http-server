@@ -33,7 +33,7 @@ C_HTTP_TEST_TLS=0 make TLS=0 test
 ```
 
 Clean before changing TLS mode or compiler flags. A TLS=0 build rejects a
-configuration requesting HTTPS. The listener binds to localhost.
+configuration requesting HTTPS. The default listener binds to `127.0.0.1`.
 
 ## Configuration
 
@@ -43,6 +43,7 @@ certificate/key pair fail startup. Configuration is loaded once at startup.
 
 | Key | Default | Purpose |
 | --- | --- | --- |
+| bind_address | 127.0.0.1 | Numeric IPv4 or IPv6 listener address |
 | port | 8080 | Listening port |
 | document_root | public | Static content directory |
 | max_connections | 1024 | Active connection cap |
@@ -67,11 +68,48 @@ certificate/key pair fail startup. Configuration is loaded once at startup.
 for client sockets, open files, and the reactor. Connection counts and queues
 are bounded independently; raising them also raises possible memory use.
 
+## Deployment and readiness
+
+Validate inputs before starting:
+
+```sh
+./http_server --check-config server.conf
+./http_server --config server.conf
+# In another terminal:
+curl --fail http://127.0.0.1:8080/ready
+```
+
+`--check-config` checks configuration, numeric bind address, document root, TLS,
+credentials, and log access without binding, starting threads, sending
+notifications, or creating log files. Port availability and runtime resources
+are checked when the server starts.
+
+Set `bind_address` to a numeric IPv4 or IPv6 address. IPv6 listeners are
+IPv6-only, and one process uses one listener. Hostnames, brackets, and scope
+suffixes are rejected. Wildcard addresses `0.0.0.0` and `::` expose public routes
+on all interfaces of that address family.
+
+`GET /ready` returns `200` with `{"status":"ready"}` after initialization.
+The unready response is `503` with `{"status":"not_ready"}`. HEAD returns the
+same headers without a body; responses use `Cache-Control: no-store`.
+`c_http_ready` reports the same lifecycle state. Draining clears readiness and
+closes the listener immediately, so new probes usually fail to connect.
+Readiness does not test filesystem responsiveness or authentication availability.
+
+For installation under a dedicated account, use the
+[systemd deployment guide](deploy/README.md). The example service uses
+`Type=notify`, journal logging, resource limits, and filesystem restrictions.
+Manual runs need no notification socket. If `NOTIFY_SOCKET` is supplied,
+startup requires successful nonblocking delivery of `READY=1`; shutdown sends
+`STOPPING=1` on a best effort basis. Only authentication credentials reload on
+SIGHUP; changes to other settings require restarting.
+
 ## Project layout
 
 - `src/`: application C sources.
 - `include/`: application headers.
-- `tests/`: integration tests and C cache tests.
+- `tests/`: integration tests and C cache, authentication, and deployment tests.
+- `deploy/`: systemd service, production configuration example, and installation guide.
 - `fuzz/`: parser, range, and JSON fuzzing.
 - `tools/`: benchmarks, stress tests, and asset preparation.
 - `public/`: static assets.
@@ -85,7 +123,7 @@ HTTP/1.0 persistence requires `Connection: keep-alive`.
 
 Headers are capped at 8 KiB. Unsupported route methods return 405 with `Allow`.
 Ambiguous framing and malformed headers are rejected and close the connection.
-Static files, health, and metrics reject nonempty request bodies.
+Static files, health, readiness, and metrics reject nonempty request bodies.
 Uncached plain HTTP files use `sendfile()` to nonblocking client sockets in
 bounded 64 KiB calls.
 If the kernel cannot use `sendfile()`, the response resumes through the worker
@@ -194,6 +232,7 @@ The `/api` namespace is reserved: unknown paths return JSON 404 errors.
 | Method | Path | Response |
 | --- | --- | --- |
 | GET, HEAD | `/health` | Existing JSON health response |
+| GET, HEAD | `/ready` | Initialization and draining readiness; no-store |
 | GET, HEAD | `/metrics` | Existing Prometheus metrics |
 | GET, HEAD | `/api/status` | `{"status":"ok"}` |
 | POST | `/api/echo` | The validated JSON request body, unchanged |

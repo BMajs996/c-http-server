@@ -122,5 +122,6 @@ These are separate extensions after the first HTTP/1.1 release:
 
 ## Current progress
 
-Phases 1–6 are implemented and locally validated. The next planned enhancement
-is **Phase 7: deployment support**.
+Phases 1–7 are implemented and locally validated. Phase 7 includes deployment
+files and installation instructions; the service is not installed automatically.
+The next planned enhancement is **Phase 8: single-backend reverse proxy**.

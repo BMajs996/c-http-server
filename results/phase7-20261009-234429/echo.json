@@ -1,0 +1,119 @@
+{
+  "format_version": 2,
+  "label": "echo",
+  "timestamp_utc": "2026-10-09T21:44:35.251635+00:00",
+  "environment": {
+    "python": "3.14.4",
+    "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.43",
+    "machine": "x86_64",
+    "processor_count": 12
+  },
+  "config": {
+    "path": "/home/taraba/Documents/c-http-server/results/phase7-20261009-234429/server.conf",
+    "sha256": "e66d6f43387e0734f8d2249b15a4e82e4608c2a52cb59117a68e7fd1a0cd86c8"
+  },
+  "trials": [
+    {
+      "scheme": "http",
+      "host": "127.0.0.1",
+      "port": 58215,
+      "path": "/api/echo",
+      "paths_sha256": null,
+      "method": "POST",
+      "authentication": null,
+      "body_sha256": "08da47db095713dfa9f0332b5541553fdfda922ee3d89581edd3423f598188ff",
+      "body_length": 47,
+      "path_count": 1,
+      "concurrency": 16,
+      "requests": 3000,
+      "keep_alive": true,
+      "warmup": 20,
+      "accept_encoding": null,
+      "completed": 3000,
+      "errors": 0,
+      "error_samples": [],
+      "warmup_errors": 0,
+      "warmup_error_samples": [],
+      "elapsed_s": 0.3723,
+      "successful_requests_per_s": 8059.03,
+      "latency_ms": {
+        "p50": 1.559,
+        "p95": 4.771,
+        "p99": 6.704
+      },
+      "body_bytes": 141000
+    },
+    {
+      "scheme": "http",
+      "host": "127.0.0.1",
+      "port": 58215,
+      "path": "/api/echo",
+      "paths_sha256": null,
+      "method": "POST",
+      "authentication": null,
+      "body_sha256": "08da47db095713dfa9f0332b5541553fdfda922ee3d89581edd3423f598188ff",
+      "body_length": 47,
+      "path_count": 1,
+      "concurrency": 16,
+      "requests": 3000,
+      "keep_alive": true,
+      "warmup": 20,
+      "accept_encoding": null,
+      "completed": 3000,
+      "errors": 0,
+      "error_samples": [],
+      "warmup_errors": 0,
+      "warmup_error_samples": [],
+      "elapsed_s": 0.3699,
+      "successful_requests_per_s": 8110.27,
+      "latency_ms": {
+        "p50": 1.552,
+        "p95": 4.747,
+        "p99": 6.445
+      },
+      "body_bytes": 141000
+    },
+    {
+      "scheme": "http",
+      "host": "127.0.0.1",
+      "port": 58215,
+      "path": "/api/echo",
+      "paths_sha256": null,
+      "method": "POST",
+      "authentication": null,
+      "body_sha256": "08da47db095713dfa9f0332b5541553fdfda922ee3d89581edd3423f598188ff",
+      "body_length": 47,
+      "path_count": 1,
+      "concurrency": 16,
+      "requests": 3000,
+      "keep_alive": true,
+      "warmup": 20,
+      "accept_encoding": null,
+      "completed": 3000,
+      "errors": 0,
+      "error_samples": [],
+      "warmup_errors": 0,
+      "warmup_error_samples": [],
+      "elapsed_s": 0.3775,
+      "successful_requests_per_s": 7947.0,
+      "latency_ms": {
+        "p50": 1.573,
+        "p95": 4.677,
+        "p99": 6.8
+      },
+      "body_bytes": 141000
+    }
+  ],
+  "summary": {
+    "trials": 3,
+    "valid_trials": 3,
+    "completed": 9000,
+    "errors": 0,
+    "median": {
+      "successful_requests_per_s": 8059.03,
+      "latency_ms.p50": 1.559,
+      "latency_ms.p95": 4.747,
+      "latency_ms.p99": 6.704
+    }
+  }
+}

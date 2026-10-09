@@ -1,0 +1,94 @@
+{
+  "runs": [
+    {
+      "label": "ready",
+      "exit_code": 0,
+      "trials": 3,
+      "valid_trials": 3,
+      "completed": 9000,
+      "errors": 0,
+      "median": {
+        "successful_requests_per_s": 8832.75,
+        "latency_ms.p50": 1.161,
+        "latency_ms.p95": 5.094,
+        "latency_ms.p99": 8.057
+      }
+    },
+    {
+      "label": "status",
+      "exit_code": 0,
+      "trials": 3,
+      "valid_trials": 3,
+      "completed": 9000,
+      "errors": 0,
+      "median": {
+        "successful_requests_per_s": 9483.06,
+        "latency_ms.p50": 0.957,
+        "latency_ms.p95": 4.928,
+        "latency_ms.p99": 7.84
+      }
+    },
+    {
+      "label": "cached-css",
+      "exit_code": 0,
+      "trials": 3,
+      "valid_trials": 3,
+      "completed": 9000,
+      "errors": 0,
+      "median": {
+        "successful_requests_per_s": 8078.48,
+        "latency_ms.p50": 1.521,
+        "latency_ms.p95": 4.674,
+        "latency_ms.p99": 6.588
+      }
+    },
+    {
+      "label": "gzip-css",
+      "exit_code": 0,
+      "trials": 3,
+      "valid_trials": 3,
+      "completed": 9000,
+      "errors": 0,
+      "median": {
+        "successful_requests_per_s": 7459.59,
+        "latency_ms.p50": 1.715,
+        "latency_ms.p95": 4.865,
+        "latency_ms.p99": 6.885
+      }
+    },
+    {
+      "label": "echo",
+      "exit_code": 0,
+      "trials": 3,
+      "valid_trials": 3,
+      "completed": 9000,
+      "errors": 0,
+      "median": {
+        "successful_requests_per_s": 8059.03,
+        "latency_ms.p50": 1.559,
+        "latency_ms.p95": 4.747,
+        "latency_ms.p99": 6.704
+      }
+    },
+    {
+      "label": "large-file",
+      "exit_code": 0,
+      "trials": 3,
+      "valid_trials": 3,
+      "completed": 120,
+      "errors": 0,
+      "median": {
+        "successful_requests_per_s": 190.28,
+        "latency_ms.p50": 16.478,
+        "latency_ms.p95": 38.294,
+        "latency_ms.p99": 40.879
+      }
+    }
+  ],
+  "stress_exit_code": 0,
+  "ready_after_stress": {
+    "status": 200,
+    "body": "{\"status\":\"ready\"}\n"
+  },
+  "notes": "Loopback, optimized TLS-capable binary using plain HTTP; access logging disabled; temporary 16 MiB large file; config retained for provenance but document root removed after run."
+}

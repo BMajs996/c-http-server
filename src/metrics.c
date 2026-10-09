@@ -6,6 +6,7 @@
 #include "file_io.h"
 #include "logging.h"
 #include "auth.h"
+#include "deployment.h"
 #include <stdio.h>
 #include <time.h>
 static uint64_t accepted, rejected, active, completed, aborted, bytes_sent, timeouts, invalid;
@@ -51,6 +52,7 @@ size_t metrics_render(char *buffer, size_t capacity) {
     GAUGE("active_connections", active);
     GAUGE("connection_limit", limit);
     GAUGE("draining", draining);
+    GAUGE("ready",deployment_ready());
     COUNTER("connections_accepted_total", accepted);
     COUNTER("connections_rejected_total", rejected);
     COUNTER("responses_completed_total", completed);
