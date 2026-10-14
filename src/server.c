@@ -11,6 +11,7 @@
 #include "file_cache.h"
 #include "transport.h"
 #include "deployment.h"
+#include "proxy.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -41,16 +42,44 @@ static long number(const char *text, long maximum) {
     if (errno || end == text || *end || n < 1 || n > maximum) return -1;
     return n;
 }
-static void remove_connection(int epoll_fd, connection **slot) {
-    (void)epoll_ctl(epoll_fd, EPOLL_CTL_DEL, connection_fd(*slot), NULL);
-    connection_destroy(*slot);
-    *slot = NULL;
+struct connection_slot {
+    connection *client;
+    uint64_t client_tag, upstream_tag;
+    int upstream_fd;
+};
+static uint64_t event_sequence=1;
+static uint64_t tag(unsigned index,unsigned upstream) {
+    return (event_sequence++<<16)|((uint64_t)index<<1)|upstream;
 }
-static void advance(int epoll_fd, connection **slot, unsigned index) {
-    uint32_t interest = connection_step(*slot);
-    struct epoll_event event = {.events = interest & ~CONNECTION_WAIT_IO, .data.u32 = index};
-    if (!interest || epoll_ctl(epoll_fd, EPOLL_CTL_MOD, connection_fd(*slot), &event) < 0)
-        remove_connection(epoll_fd, slot);
+static void unregister_upstream(int epoll_fd,struct connection_slot *slot) {
+    if(slot->upstream_fd>=0)
+        (void)epoll_ctl(epoll_fd,EPOLL_CTL_DEL,slot->upstream_fd,NULL);
+    slot->upstream_fd=-1;slot->upstream_tag=0;
+}
+static void remove_connection(int epoll_fd,struct connection_slot *slot) {
+    unregister_upstream(epoll_fd,slot);
+    (void)epoll_ctl(epoll_fd,EPOLL_CTL_DEL,connection_fd(slot->client),NULL);
+    connection_destroy(slot->client);
+    slot->client=NULL;slot->client_tag=0;
+}
+static void advance(int epoll_fd,struct connection_slot *slot,unsigned index) {
+    /* Unregister before stepping: a completed transaction may close/reuse its
+     * fd. Every upstream registration has a fresh tag for stale batch events. */
+    unregister_upstream(epoll_fd,slot);
+    uint32_t interest=connection_step(slot->client);
+    struct epoll_event event={.events=interest & ~CONNECTION_WAIT_IO,.data.u64=slot->client_tag};
+    if(!interest || epoll_ctl(epoll_fd,EPOLL_CTL_MOD,connection_fd(slot->client),&event)<0) {
+        remove_connection(epoll_fd,slot);return;
+    }
+    struct connection_watch upstream=connection_upstream_watch(slot->client);
+    if(upstream.fd>=0 && upstream.interest) {
+        slot->upstream_tag=tag(index,1);
+        event=(struct epoll_event){.events=upstream.interest,.data.u64=slot->upstream_tag};
+        if(epoll_ctl(epoll_fd,EPOLL_CTL_ADD,upstream.fd,&event)<0) {
+            remove_connection(epoll_fd,slot);return;
+        }
+        slot->upstream_fd=upstream.fd;
+    }
 }
 int main(int argc, char **argv) {
     config_defaults();
@@ -74,6 +103,7 @@ int main(int argc, char **argv) {
         config.shutdown_ms=(unsigned)grace_value;
         if(argc>=3)strcpy(config.document_root,argv[2]);
     }
+    if(proxy_config_validate()<0)return EXIT_FAILURE;
     long port=config.port, limit=config.max_connections, grace_ms=config.shutdown_ms;
     struct sockaddr_storage address;socklen_t address_length;
     if(deployment_address(config.bind_address,config.port,&address,&address_length)<0) {
@@ -91,7 +121,7 @@ int main(int argc, char **argv) {
     if (logging_init() < 0) {transport_close();return EXIT_FAILURE;}
     metrics_init((unsigned)limit);
     int root = -1, server = -1, epoll_fd = -1, failed = 1;
-    connection **slots = NULL;
+    struct connection_slot *slots = NULL;
     root = open(config.document_root, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (root < 0) { perror("document root"); goto cleanup; }
     if(auth_init()<0){fprintf(stderr,"Authentication initialization failed: check credential file and limits\n");goto cleanup;}
@@ -112,14 +142,15 @@ int main(int argc, char **argv) {
     epoll_fd = epoll_create1(EPOLL_CLOEXEC);
     if (epoll_fd < 0) { perror("epoll_create1"); goto cleanup; }
     if (file_io_init() < 0) { fprintf(stderr, "file I/O pool initialization failed\n"); goto cleanup; }
-    struct epoll_event completion = {.events = EPOLLIN, .data.u32 = UINT32_MAX - 1};
+    struct epoll_event completion = {.events = EPOLLIN, .data.u64 = UINT64_MAX - 1};
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, file_io_eventfd(), &completion) < 0) {
         perror("I/O completion epoll registration"); goto cleanup;
     }
     slots = calloc((size_t)limit, sizeof *slots);
-    if (!slots) { perror("calloc"); goto cleanup; }
-    /* Slots are stable IDs. UINT32_MAX identifies the listener, never a client. */
-    struct epoll_event listener = {.events = EPOLLIN, .data.u32 = UINT32_MAX};
+    if(!slots){perror("calloc");goto cleanup;}
+    for(long i=0;i<limit;i++)slots[i].upstream_fd=-1;
+    /* Generation-tagged socket events; UINT64_MAX identifies the listener. */
+    struct epoll_event listener = {.events = EPOLLIN, .data.u64 = UINT64_MAX};
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, server, &listener) < 0) {
         perror("epoll_ctl"); goto cleanup;
     }
@@ -143,8 +174,8 @@ int main(int argc, char **argv) {
             drain_deadline = now + grace_ms;
             (void)epoll_ctl(epoll_fd, EPOLL_CTL_DEL, server, NULL);
             close(server); server = -1;
-            for (unsigned i = 0; i < (unsigned)limit; ++i) if (slots[i]) {
-                connection_drain(slots[i]); advance(epoll_fd, &slots[i], i);
+            for (unsigned i = 0; i < (unsigned)limit; ++i) if (slots[i].client) {
+                connection_drain(slots[i].client); advance(epoll_fd, &slots[i], i);
             }
         }
         if (draining && (metrics_active() == 0 || atomic_load(&shutdown_requests) > 1 || now_ms() >= drain_deadline)) break;
@@ -154,14 +185,17 @@ int main(int argc, char **argv) {
             else {credential_reload=file_io_auth_reload();if(credential_reload)reload_pending=0;}
         }
         struct epoll_event events[128];
-        int count = epoll_wait(epoll_fd, events, 128, 100);
+        int runnable=0;
+        for(unsigned i=0;i<(unsigned)limit;i++)if(slots[i].client && connection_runnable(slots[i].client)){runnable=1;break;}
+        int count = epoll_wait(epoll_fd, events, 128, runnable?0:100);
         if (count < 0) {
             if (errno == EINTR) continue;
             perror("epoll_wait"); failed = 1; break;
         }
         for (int i = 0; i < count && !stopping; ++i) {
-            unsigned index = events[i].data.u32;
-            if (index == UINT32_MAX) {
+            uint64_t event_tag=events[i].data.u64;
+            unsigned index=(unsigned)((event_tag&65535)>>1);
+            if (event_tag == UINT64_MAX) {
                 if (server < 0 || atomic_load(&shutdown_requests)) continue;
                 /* Bound accept work too, so a connection flood cannot starve
                  * existing clients. Resource exhaustion exits cleanly rather
@@ -182,21 +216,23 @@ int main(int argc, char **argv) {
                         metrics_reject(); close(client); continue;
                     }
                     unsigned slot = 0;
-                    while (slot < (unsigned)limit && slots[slot]) ++slot;
+                    while (slot < (unsigned)limit && slots[slot].client) ++slot;
                     if (slot == (unsigned)limit) { metrics_reject(); close(client); continue; }
                     connection *c = connection_create(client, root);
                     if (!c) { metrics_reject(); close(client); continue; }
-                    struct epoll_event event = {.events = EPOLLIN, .data.u32 = slot};
+                    slots[slot].client_tag=tag(slot,0);
+                    struct epoll_event event = {.events = EPOLLIN, .data.u64 = slots[slot].client_tag};
                     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client, &event) < 0) {
                         metrics_reject(); connection_destroy(c); continue;
                     }
-                    slots[slot] = c;
+                    slots[slot].client = c;
                 }
-            } else if (index == UINT32_MAX - 1) {
+            } else if (event_tag == UINT64_MAX - 1) {
                 file_io_ack();
-            } else if (index < (unsigned)limit && slots[index]) {
-                if (events[i].events & (EPOLLERR | EPOLLHUP)) remove_connection(epoll_fd, &slots[index]);
-                else advance(epoll_fd, &slots[index], index);
+            } else if (index < (unsigned)limit && slots[index].client) {
+                if(event_tag!=slots[index].client_tag && event_tag!=slots[index].upstream_tag)continue;
+                if(event_tag==slots[index].client_tag && (events[i].events & (EPOLLERR|EPOLLHUP)))remove_connection(epoll_fd,&slots[index]);
+                else advance(epoll_fd,&slots[index],index);
             }
         }
         /* Apply completions only after the batch, so callbacks cannot free a
@@ -213,7 +249,7 @@ int main(int argc, char **argv) {
             file_io_release(job);
             if (owner) {
                 for (unsigned i = 0; i < (unsigned)limit; ++i)
-                    if (slots[i] == owner) { advance(epoll_fd, &slots[i], i); break; }
+                    if (slots[i].client == owner) { advance(epoll_fd, &slots[i], i); break; }
             }
         }
         /* Expiry sweep happens after the whole batch: slots cannot be freed
@@ -221,7 +257,7 @@ int main(int argc, char **argv) {
         int64_t now = now_ms();
         if (now < 0) { failed = 1; break; }
         for (unsigned i = 0; i < (unsigned)limit; ++i)
-            if (slots[i] && (connection_expired(slots[i], now) || connection_waiting(slots[i]))) advance(epoll_fd, &slots[i], i);
+            if (slots[i].client && (connection_expired(slots[i].client, now) || connection_waiting(slots[i].client) || connection_runnable(slots[i].client))) advance(epoll_fd, &slots[i], i);
     }
 cleanup:
     if(deployment_ready()) {
@@ -230,7 +266,7 @@ cleanup:
     }
     stopping = 1;
     if (slots) {
-        for (long i = 0; i < limit; ++i) if (slots[i]) connection_destroy(slots[i]);
+        for (long i = 0; i < limit; ++i) if (slots[i].client) connection_destroy(slots[i].client);
         free(slots);
     }
     file_io_close();

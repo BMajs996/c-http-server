@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "deployment.h"
+#include "proxy.h"
 #include "auth.h"
 #include "config.h"
 #include "logging.h"
@@ -49,6 +50,7 @@ int deployment_notify(const char *message) {
     return 0;
 }
 int deployment_check_config(void) {
+    if(proxy_config_validate()<0)return -1;
     struct sockaddr_storage address;socklen_t length;
     if(deployment_address(config.bind_address,config.port,&address,&length)<0) {
         fprintf(stderr,"configuration: bind_address must be a numeric IPv4 or IPv6 address\n");return -1;

@@ -1,0 +1,121 @@
+# TYPE c_http_uptime_seconds gauge
+c_http_uptime_seconds 5
+# TYPE c_http_active_connections gauge
+c_http_active_connections 1
+# TYPE c_http_connection_limit gauge
+c_http_connection_limit 1024
+# TYPE c_http_draining gauge
+c_http_draining 0
+# TYPE c_http_ready gauge
+c_http_ready 1
+# TYPE c_http_upstream_active_connections gauge
+c_http_upstream_active_connections 0
+# TYPE c_http_proxy_requests_total counter
+c_http_proxy_requests_total 13272
+# TYPE c_http_upstream_connect_failures_total counter
+c_http_upstream_connect_failures_total 0
+# TYPE c_http_upstream_timeouts_total counter
+c_http_upstream_timeouts_total 0
+# TYPE c_http_upstream_invalid_responses_total counter
+c_http_upstream_invalid_responses_total 0
+# TYPE c_http_upstream_bytes_received_total counter
+c_http_upstream_bytes_received_total 1595232328
+# TYPE c_http_proxy_body_bytes_sent_total counter
+c_http_proxy_body_bytes_sent_total 1592198544
+# TYPE c_http_connections_accepted_total counter
+c_http_connections_accepted_total 249
+# TYPE c_http_connections_rejected_total counter
+c_http_connections_rejected_total 0
+# TYPE c_http_responses_completed_total counter
+c_http_responses_completed_total 13244
+# TYPE c_http_responses_aborted_total counter
+c_http_responses_aborted_total 32
+# TYPE c_http_body_bytes_sent_total counter
+c_http_body_bytes_sent_total 1592217327
+# TYPE c_http_timeouts_total counter
+c_http_timeouts_total 0
+# TYPE c_http_request_rejections_total counter
+c_http_request_rejections_total 0
+# TYPE c_http_responses_total counter
+c_http_responses_total{status_class="1xx"} 0
+c_http_responses_total{status_class="2xx"} 13244
+c_http_responses_total{status_class="3xx"} 0
+c_http_responses_total{status_class="4xx"} 0
+c_http_responses_total{status_class="5xx"} 0
+# TYPE c_http_file_jobs_outstanding gauge
+c_http_file_jobs_outstanding 0
+# TYPE c_http_file_jobs_queued gauge
+c_http_file_jobs_queued 0
+# TYPE c_http_file_jobs_running gauge
+c_http_file_jobs_running 0
+# TYPE c_http_file_jobs_completed_pending gauge
+c_http_file_jobs_completed_pending 0
+# TYPE c_http_file_job_limit gauge
+c_http_file_job_limit 64
+# TYPE c_http_file_jobs_submitted_total counter
+c_http_file_jobs_submitted_total 0
+# TYPE c_http_file_jobs_finished_total counter
+c_http_file_jobs_finished_total 0
+# TYPE c_http_log_queue_depth gauge
+c_http_log_queue_depth 0
+# TYPE c_http_log_queue_limit gauge
+c_http_log_queue_limit 1024
+# TYPE c_http_logs_written_total counter
+c_http_logs_written_total 0
+# TYPE c_http_logs_dropped_total counter
+c_http_logs_dropped_total 0
+# TYPE c_http_tls_enabled gauge
+c_http_tls_enabled 0
+# TYPE c_http_tls_handshakes_total counter
+c_http_tls_handshakes_total 0
+# TYPE c_http_tls_failed_handshakes_total counter
+c_http_tls_failed_handshakes_total 0
+# TYPE c_http_cache_bytes gauge
+c_http_cache_bytes 0
+# TYPE c_http_cache_byte_limit gauge
+c_http_cache_byte_limit 0
+# TYPE c_http_cache_entries gauge
+c_http_cache_entries 0
+# TYPE c_http_cache_hits_total counter
+c_http_cache_hits_total 0
+# TYPE c_http_cache_misses_total counter
+c_http_cache_misses_total 0
+# TYPE c_http_cache_evictions_total counter
+c_http_cache_evictions_total 0
+# TYPE c_http_cache_expirations_total counter
+c_http_cache_expirations_total 0
+# TYPE c_http_cache_bypasses_total counter
+c_http_cache_bypasses_total 0
+# TYPE c_http_auth_credentials gauge
+c_http_auth_credentials 0
+# TYPE c_http_auth_nonce_entries gauge
+c_http_auth_nonce_entries 0
+# TYPE c_http_auth_nonce_limit gauge
+c_http_auth_nonce_limit 4096
+# TYPE c_http_auth_accepted_total counter
+c_http_auth_accepted_total 0
+# TYPE c_http_auth_rejected_total counter
+c_http_auth_rejected_total 0
+# TYPE c_http_auth_invalid_signatures_total counter
+c_http_auth_invalid_signatures_total 0
+# TYPE c_http_auth_invalid_timestamps_total counter
+c_http_auth_invalid_timestamps_total 0
+# TYPE c_http_auth_replays_total counter
+c_http_auth_replays_total 0
+# TYPE c_http_auth_capacity_rejections_total counter
+c_http_auth_capacity_rejections_total 0
+# TYPE c_http_auth_reloads_total counter
+c_http_auth_reloads_total 0
+# TYPE c_http_auth_reload_failures_total counter
+c_http_auth_reload_failures_total 0
+# TYPE c_http_response_duration_seconds histogram
+c_http_response_duration_seconds_bucket{le="0.001"} 12998
+c_http_response_duration_seconds_bucket{le="0.005"} 13118
+c_http_response_duration_seconds_bucket{le="0.010"} 13126
+c_http_response_duration_seconds_bucket{le="0.025"} 13244
+c_http_response_duration_seconds_bucket{le="0.050"} 13244
+c_http_response_duration_seconds_bucket{le="0.100"} 13244
+c_http_response_duration_seconds_bucket{le="1.000"} 13244
+c_http_response_duration_seconds_bucket{le="+Inf"} 13244
+c_http_response_duration_seconds_sum 3.640
+c_http_response_duration_seconds_count 13244

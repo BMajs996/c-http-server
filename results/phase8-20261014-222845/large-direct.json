@@ -1,0 +1,119 @@
+{
+  "format_version": 2,
+  "label": "large-direct",
+  "timestamp_utc": "2026-10-14T20:28:49.210684+00:00",
+  "environment": {
+    "python": "3.14.4",
+    "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.43",
+    "machine": "x86_64",
+    "processor_count": 12
+  },
+  "config": {
+    "path": "/home/taraba/Documents/c-http-server/results/phase8-20261014-222845/backend.conf",
+    "sha256": "7afb6fcab63192d9002f14c7a4be49c440972af86d967187cc6747ffcaa06c75"
+  },
+  "trials": [
+    {
+      "scheme": "http",
+      "host": "127.0.0.1",
+      "port": 54297,
+      "path": "/large.bin",
+      "paths_sha256": null,
+      "method": "GET",
+      "authentication": null,
+      "body_sha256": null,
+      "body_length": 0,
+      "path_count": 1,
+      "concurrency": 4,
+      "requests": 40,
+      "keep_alive": true,
+      "warmup": 20,
+      "accept_encoding": null,
+      "completed": 40,
+      "errors": 0,
+      "error_samples": [],
+      "warmup_errors": 0,
+      "warmup_error_samples": [],
+      "elapsed_s": 0.1299,
+      "successful_requests_per_s": 307.86,
+      "latency_ms": {
+        "p50": 8.856,
+        "p95": 22.107,
+        "p99": 25.071
+      },
+      "body_bytes": 335544320
+    },
+    {
+      "scheme": "http",
+      "host": "127.0.0.1",
+      "port": 54297,
+      "path": "/large.bin",
+      "paths_sha256": null,
+      "method": "GET",
+      "authentication": null,
+      "body_sha256": null,
+      "body_length": 0,
+      "path_count": 1,
+      "concurrency": 4,
+      "requests": 40,
+      "keep_alive": true,
+      "warmup": 20,
+      "accept_encoding": null,
+      "completed": 40,
+      "errors": 0,
+      "error_samples": [],
+      "warmup_errors": 0,
+      "warmup_error_samples": [],
+      "elapsed_s": 0.1163,
+      "successful_requests_per_s": 343.79,
+      "latency_ms": {
+        "p50": 8.512,
+        "p95": 18.981,
+        "p99": 24.579
+      },
+      "body_bytes": 335544320
+    },
+    {
+      "scheme": "http",
+      "host": "127.0.0.1",
+      "port": 54297,
+      "path": "/large.bin",
+      "paths_sha256": null,
+      "method": "GET",
+      "authentication": null,
+      "body_sha256": null,
+      "body_length": 0,
+      "path_count": 1,
+      "concurrency": 4,
+      "requests": 40,
+      "keep_alive": true,
+      "warmup": 20,
+      "accept_encoding": null,
+      "completed": 40,
+      "errors": 0,
+      "error_samples": [],
+      "warmup_errors": 0,
+      "warmup_error_samples": [],
+      "elapsed_s": 0.1197,
+      "successful_requests_per_s": 334.04,
+      "latency_ms": {
+        "p50": 8.828,
+        "p95": 20.49,
+        "p99": 23.376
+      },
+      "body_bytes": 335544320
+    }
+  ],
+  "summary": {
+    "trials": 3,
+    "valid_trials": 3,
+    "completed": 120,
+    "errors": 0,
+    "median": {
+      "successful_requests_per_s": 334.04,
+      "latency_ms.p50": 8.828,
+      "latency_ms.p95": 20.49,
+      "latency_ms.p99": 24.579
+    }
+  }
+}

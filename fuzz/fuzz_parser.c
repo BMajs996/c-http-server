@@ -1,6 +1,7 @@
 /* Dependency-free deterministic mutation runner; not coverage-guided fuzzing.
  * Also exposes a libFuzzer entry point for Clang when available. */
 #include "http_parser.h"
+#include "http_response.h"
 #include "cache.h"
 #include "json.h"
 #include <assert.h>
@@ -20,6 +21,16 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         assert(a.head == 0 || a.head == 1);
         assert(a.gzip_q>=0 && a.gzip_q<=1000 && a.identity_q>=0 && a.identity_q<=1000);
         assert(a.gzip_q==b.gzip_q && a.identity_q==b.identity_q);
+    }
+    struct http_response response;
+    (void)http_response_parse(&response,(const char *)data,size,0);
+    struct http_chunks chunks={0};size_t offset=0;
+    for(size_t turn=0;turn<size+1 && offset<size;turn++) {
+        char output[32];size_t in=size-offset,out=sizeof output;
+        if(in>17)in=17;
+        int rc=http_chunks_decode(&chunks,(const char *)data+offset,&in,output,&out);
+        assert(in<=17 && out<=sizeof output);offset+=in;
+        if(rc || (!in && !out))break;
     }
     int valid_json=json_valid((const char *)data,size);
     assert(valid_json==0 || valid_json==1);
@@ -57,6 +68,9 @@ int main(int argc, char **argv) {
         "POST /api/echo HTTP/1.1\r\nHost: a\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n",
         "POST /api/private/echo?x=%2f HTTP/1.1\r\nHost: a\r\nX-Auth-Key-Id: client-a\r\nX-Auth-Timestamp: 1000\r\nX-Auth-Nonce: 00000000000000000000000000000000\r\nX-Auth-Signature: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n",
         "GET /api/private/status HTTP/1.1\r\nHost: a\r\nAuthorization: Bearer example\r\nAuthorization: Bearer duplicate\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nContent-Length: 42\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
+        "3;foo=bar\r\nabc\r\n0\r\nX-End: yes\r\n\r\n",
         "bytes=0-4095", "bytes=-20", "bytes=18446744073709551615-"
     };
     uint8_t data[HEADER_LIMIT + 32];
@@ -83,7 +97,7 @@ int main(int argc, char **argv) {
         }
         LLVMFuzzerTestOneInput(data, length);
     }
-    printf("Passed %lu deterministic parser/range/JSON mutations (seed 0x12345678).\n", iterations);
+    printf("Passed %lu deterministic request/response/chunk/range/JSON mutations (seed 0x12345678).\n", iterations);
     return 0;
 }
 #endif

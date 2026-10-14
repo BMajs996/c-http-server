@@ -1,0 +1,77 @@
+{
+  "runs": [
+    {
+      "label": "status-direct",
+      "exit_code": 0,
+      "trials": 3,
+      "valid_trials": 3,
+      "completed": 9000,
+      "errors": 0,
+      "median": {
+        "successful_requests_per_s": 9189.69,
+        "latency_ms.p50": 1.065,
+        "latency_ms.p95": 4.868,
+        "latency_ms.p99": 7.487
+      }
+    },
+    {
+      "label": "status-proxy",
+      "exit_code": 0,
+      "trials": 3,
+      "valid_trials": 3,
+      "completed": 9000,
+      "errors": 0,
+      "median": {
+        "successful_requests_per_s": 7707.26,
+        "latency_ms.p50": 1.64,
+        "latency_ms.p95": 4.438,
+        "latency_ms.p99": 6.64
+      }
+    },
+    {
+      "label": "large-direct",
+      "exit_code": 0,
+      "trials": 3,
+      "valid_trials": 3,
+      "completed": 120,
+      "errors": 0,
+      "median": {
+        "successful_requests_per_s": 334.04,
+        "latency_ms.p50": 8.828,
+        "latency_ms.p95": 20.49,
+        "latency_ms.p99": 24.579
+      }
+    },
+    {
+      "label": "large-proxy",
+      "exit_code": 0,
+      "trials": 3,
+      "valid_trials": 3,
+      "completed": 120,
+      "errors": 0,
+      "median": {
+        "successful_requests_per_s": 217.23,
+        "latency_ms.p50": 16.808,
+        "latency_ms.p95": 23.564,
+        "latency_ms.p99": 26.968
+      }
+    }
+  ],
+  "slow_reader_memory_samples": [
+    {
+      "file": "large.bin",
+      "slow_readers": 16,
+      "upstream_active": 16,
+      "proxy_rss_kib": 9612,
+      "stress_exit_code": 0
+    },
+    {
+      "file": "huge.bin",
+      "slow_readers": 16,
+      "upstream_active": 16,
+      "proxy_rss_kib": 9576,
+      "stress_exit_code": 0
+    }
+  ],
+  "notes": "Loopback HTTP, access logging/cache disabled; three trials each; C server backend; backend connections are fresh through proxy, direct client keep-alive is reused; Python overhead/shared host load included; temporary document root removed after run; RSS excludes kernel socket buffers."
+}

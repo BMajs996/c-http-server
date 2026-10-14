@@ -7,6 +7,8 @@ typedef struct {
     size_t cache_bytes, cache_max_file_bytes;
     unsigned cache_entries, cache_ttl_ms;
     unsigned auth_timestamp_window_s, auth_nonce_entries;
+    unsigned upstream_port, upstream_connect_timeout_ms, upstream_response_timeout_ms;
+    char proxy_prefix[256], upstream_address[46], upstream_host[256];
     char bind_address[46];
     char auth_credentials_file[2048];
     char document_root[2048], access_log[2048], tls_cert[2048], tls_key[2048];

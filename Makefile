@@ -7,25 +7,28 @@ ifeq ($(TLS),1)
 CPPFLAGS += -DWITH_TLS
 LDLIBS += -lssl
 endif
-SOURCES = src/server.c src/connection.c src/http_parser.c src/static_files.c src/logging.c src/cache.c src/file_io.c src/metrics.c src/config.c src/file_cache.c src/transport.c src/router.c src/json.c src/auth.c src/deployment.c
+SOURCES = src/server.c src/connection.c src/http_parser.c src/static_files.c src/logging.c src/cache.c src/file_io.c src/metrics.c src/config.c src/file_cache.c src/transport.c src/router.c src/json.c src/auth.c src/deployment.c src/proxy.c src/http_response.c
 
 .PHONY: all clean test
 all: http_server
-http_server: $(SOURCES) include/connection.h include/http_parser.h include/static_files.h include/logging.h include/cache.h include/file_io.h include/metrics.h include/config.h include/file_cache.h include/transport.h include/router.h include/json.h include/auth.h include/deployment.h
+http_server: $(SOURCES) include/connection.h include/http_parser.h include/static_files.h include/logging.h include/cache.h include/file_io.h include/metrics.h include/config.h include/file_cache.h include/transport.h include/router.h include/json.h include/auth.h include/deployment.h include/proxy.h include/http_response.h include/http_syntax.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -pthread $(SOURCES) -o $@ $(LDLIBS)
-test: http_server test_file_cache test_auth test_deployment
+test: http_server test_file_cache test_auth test_deployment test_http_response test_proxy_retry
 	./test_file_cache
 	./test_auth
 	./test_deployment
+	./test_http_response
+	./test_proxy_retry
 	python3 tests/test_server.py
+	python3 tests/test_proxy.py
 	python3 tests/test_precompress.py
 	python3 tests/test_auth_tools.py
 clean:
-	rm -f http_server fuzz_parser fuzz_libfuzzer test_file_cache test_auth test_deployment cache_lookup_benchmark
+	rm -f http_server fuzz_parser fuzz_libfuzzer test_file_cache test_auth test_deployment test_http_response test_proxy_retry cache_lookup_benchmark
 
 .PHONY: fuzz stress benchmark benchmark-cache
-fuzz_parser: fuzz/fuzz_parser.c src/http_parser.c src/cache.c src/json.c include/http_parser.h include/cache.h include/json.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) fuzz/fuzz_parser.c src/http_parser.c src/cache.c src/json.c -o $@ -lcrypto
+fuzz_parser: fuzz/fuzz_parser.c src/http_parser.c src/cache.c src/json.c src/http_response.c include/http_response.h include/http_parser.h include/http_syntax.h include/cache.h include/json.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) fuzz/fuzz_parser.c src/http_parser.c src/cache.c src/json.c src/http_response.c -o $@ -lcrypto
 fuzz: fuzz_parser
 	./fuzz_parser 100000
 # Requires a running server at 127.0.0.1:8080.
@@ -38,8 +41,8 @@ benchmark-cache: cache_lookup_benchmark
 stress:
 	python3 tools/stress.py
 # Optional coverage-guided build, requires Clang with libFuzzer.
-fuzz_libfuzzer: fuzz/fuzz_parser.c src/http_parser.c src/cache.c src/json.c
-	clang -std=c11 -g -O1 -Iinclude -DLIBFUZZER -fsanitize=fuzzer,address,undefined fuzz/fuzz_parser.c src/http_parser.c src/cache.c src/json.c -o $@ -lcrypto
+fuzz_libfuzzer: fuzz/fuzz_parser.c src/http_parser.c src/cache.c src/json.c src/http_response.c
+	clang -std=c11 -g -O1 -Iinclude -DLIBFUZZER -fsanitize=fuzzer,address,undefined fuzz/fuzz_parser.c src/http_parser.c src/cache.c src/json.c src/http_response.c -o $@ -lcrypto
 
 test_file_cache: tests/test_file_cache.c src/file_cache.c src/config.c include/file_cache.h include/config.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_file_cache.c src/file_cache.c src/config.c -o $@
@@ -53,3 +56,9 @@ test_auth: tests/test_auth.c src/auth.c src/config.c include/auth.h include/conf
 
 test_deployment: tests/test_deployment.c $(filter-out src/server.c src/connection.c,$(SOURCES)) $(wildcard include/*.h)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -pthread tests/test_deployment.c $(filter-out src/server.c src/connection.c,$(SOURCES)) -o $@ $(LDLIBS)
+
+test_http_response: tests/test_http_response.c src/http_response.c include/http_response.h include/http_parser.h include/http_syntax.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_http_response.c src/http_response.c -o $@
+
+test_proxy_retry: tests/test_proxy_retry.c $(filter-out src/server.c src/connection.c src/transport.c,$(SOURCES)) $(wildcard include/*.h)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -pthread tests/test_proxy_retry.c $(filter-out src/server.c src/connection.c src/transport.c,$(SOURCES)) -o $@ $(LDLIBS)

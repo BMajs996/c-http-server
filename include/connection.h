@@ -11,6 +11,9 @@ int connection_fd(const connection *c);
 int connection_expired(const connection *c, int64_t now);
 /* Advance bounded work; EPOLLIN/EPOLLOUT means wait/resume, 0 means close. */
 uint32_t connection_step(connection *c);
+struct connection_watch { int fd; uint32_t interest; };
+struct connection_watch connection_upstream_watch(const connection *c);
+int connection_runnable(const connection *c);
 void connection_destroy(connection *c);
 void connection_io_complete(connection *c, io_job *job);
 int connection_waiting(const connection *c);

@@ -146,6 +146,110 @@ publishable content under the document root. These checks do not protect secrets
 copied or hard-linked into that directory. Publish updates with atomic rename;
 in-place modification can change an ongoing uncached transfer.
 
+## Single-backend reverse proxy
+
+Phase 8 adds an optional proxy route. Start a local backend in one terminal:
+
+```sh
+python3 -m http.server 9000 --bind 127.0.0.1 --directory public
+```
+
+In another terminal, validate and start the proxy:
+
+```sh
+./http_server --check-config server-proxy.conf
+./http_server --config server-proxy.conf
+```
+
+Probe it from a third terminal:
+
+```sh
+curl --fail http://127.0.0.1:8080/proxy/assets/style.css
+curl --fail http://127.0.0.1:8080/ready
+```
+
+The Python example backend serves files; it does not implement application POST
+handlers. Use an application backend to try POST, PUT, PATCH, or DELETE.
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| proxy_prefix | empty | Enable the proxy under a path ending in `/` |
+| upstream_address | empty | Numeric IPv4/IPv6 backend address; no DNS lookup |
+| upstream_port | 0 (disabled) | Backend port; 1–65535 when configured |
+| upstream_host | empty | Host authority sent to the backend |
+| upstream_connect_timeout_ms | 2000 | Connect deadline; 1–300000 ms |
+| upstream_response_timeout_ms | 30000 | Total post-connect transaction deadline; 1–300000 ms |
+
+Supply prefix, address, port, and Host together. No proxy settings means the
+existing local behavior. Prefixes use ASCII letters, digits, `/`, `-`, `_`, and
+`.`; root, duplicate slashes, `..`, and reserved first segments (`api`, `health`,
+`ready`, `metrics`) are rejected. Startup and `--check-config` validate these
+settings without contacting the backend. Obvious same-listener loops and
+unspecified/multicast upstream addresses are rejected. Other network aliases or
+indirect forwarding loops remain the deployment operator's responsibility.
+
+`/proxy/items?q=%2F` becomes `/items?q=%2F`; query bytes are preserved.
+`/proxy` redirects with 308 to `/proxy/`, retaining its query. `/proxy-other`
+remains a local path. Local API routes, static content, readiness, and metrics
+continue to work. The proxy does not cache backend responses.
+
+GET, HEAD, POST, PUT, PATCH, DELETE, and OPTIONS are accepted. Bodies are
+buffered up to 16 KiB and forwarded unchanged without requiring JSON. Incoming
+headers remain limited to 8 KiB; forwarded requests/responses allow at most 128
+header fields and bounded reconstruction overhead. Existing strict request
+validation still applies, including credential-header length limits.
+Chunked request uploads, Expect, CONNECT, and Upgrade are unsupported.
+
+The proxy reconstructs HTTP/1.1 requests with configured Host, validated
+Content-Length, and Connection: close. Connection-specific fields, including
+fields nominated by Connection, are removed in each direction; nominations of
+Host, Content-Length, or Transfer-Encoding are rejected. Client-provided
+Forwarded and X-Forwarded-* fields are removed; X-Forwarded-For is generated from
+the peer address and X-Forwarded-Proto from the client transport. Via identifies
+the intermediary. End-to-end Authorization and Cookie may reach the configured
+backend; the proxy route itself is public and does not inherit local private
+API authentication policies. Backend Location and cookie Path attributes pass
+through unchanged; configure the application for its external proxy prefix.
+
+Each client processes one upstream transaction at a time, using a fresh backend
+connection. Upstream HTTP is plain TCP; client HTTPS uses the existing TLS
+transport. Fixed-length, chunked, close-delimited, and bodyless responses are
+handled. Chunk framing is incrementally validated and decoded; HTTP/1.1 clients
+receive newly generated chunking when length is unknown. HTTP/1.0 clients use
+connection-close framing in that case. Chunk extensions are bounded; trailers
+are validated and discarded rather than forwarded. Unsupported transfer codings,
+duplicate length fields, ambiguous framing, invalid upgrades, and oversized
+headers fail. Unsolicited 100 responses are consumed; other valid informational
+responses are forwarded only to HTTP/1.1 clients, with an eight-response/8 KiB
+budget. HTTP/1.0 clients receive only the final response.
+
+Fixed buffers and suspended upstream reads bound memory under slow clients;
+TLS partial writes preserve buffers until completion. The response deadline is
+a total budget including downstream backpressure, not a sliding idle timer.
+A declared chunk size never controls allocation. Client keep-alive and ordered
+pipelining resume only after valid response completion.
+
+Connection failure or invalid upstream headers produce 502; upstream deadlines
+produce 504; allocation/socket resource failures produce 503 where possible.
+After final response writing starts, upstream failure closes the client
+and logs an incomplete response rather than appending an error body. A pending
+TLS write or partial informational header also prevents replacing its buffer
+with an error response. Shutdown leaves previously prepared output buffers
+unchanged and closes the connection at the response boundary. Valid
+backend error responses pass through. No automatic retries are attempted.
+
+Shutdown clears readiness and closes the listener, permits active proxy
+responses to finish within shutdown_ms, and then closes remaining connections.
+Upstream sessions are owned by their client and released on completion/failure;
+an otherwise silent peer can remain until its transaction deadline if TCP
+has not exposed a definitive disconnect.
+
+New metrics include upstream_active_connections, proxy_requests_total,
+upstream_connect_failures_total, upstream_timeouts_total,
+upstream_invalid_responses_total, upstream_bytes_received_total (wire bytes,
+including headers), and proxy_body_bytes_sent_total (payload only), all with
+the `c_http_` prefix. Backend health does not change lifecycle readiness.
+
 ## File content cache
 
 Set `cache_bytes` above zero to enable it. Eligible files are preloaded by disk
@@ -504,7 +608,10 @@ make fuzz_libfuzzer
 
 Tests cover parsing, framing, paths, ranges, caching, verified HTTPS, pipelining,
 queue saturation, delayed disk work, slow output, metrics, logging, and shutdown.
-A C cache unit test checks ownership, pinned entries, and capacity. HTTPS tests
+C unit tests cover cache ownership, authentication, readiness, upstream response
+framing, and incremental chunk decoding. Controlled backend tests exercise
+rewriting, connection headers, early responses, large transfers, TLS, IPv6,
+malformed responses, timeouts, pipelining, disconnects, and proxy shutdown. HTTPS tests
 create temporary certificates and require the `openssl` command. An optional
 file-descriptor check skips when the process descriptor table is unavailable.
 

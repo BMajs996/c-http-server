@@ -23,3 +23,11 @@ auth_nonce_entries = 4096
 # Set both paths for HTTPS, e.g. /etc/c-http-server/tls/server.crt and server.key.
 tls_cert =
 tls_key =
+
+# Optional HTTP backend (see the main README); disabled until configured.
+# proxy_prefix = /proxy/
+# upstream_address = 127.0.0.1
+# upstream_port = 9000
+# upstream_host = localhost:9000
+# upstream_connect_timeout_ms = 2000
+# upstream_response_timeout_ms = 30000

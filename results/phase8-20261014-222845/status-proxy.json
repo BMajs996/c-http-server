@@ -1,0 +1,119 @@
+{
+  "format_version": 2,
+  "label": "status-proxy",
+  "timestamp_utc": "2026-10-14T20:28:48.241925+00:00",
+  "environment": {
+    "python": "3.14.4",
+    "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.43",
+    "machine": "x86_64",
+    "processor_count": 12
+  },
+  "config": {
+    "path": "/home/taraba/Documents/c-http-server/results/phase8-20261014-222845/proxy.conf",
+    "sha256": "b5593ce9a46a5d300e2eb380d65598273acbecba71474c342b805394b78e1553"
+  },
+  "trials": [
+    {
+      "scheme": "http",
+      "host": "127.0.0.1",
+      "port": 56189,
+      "path": "/proxy/api/status",
+      "paths_sha256": null,
+      "method": "GET",
+      "authentication": null,
+      "body_sha256": null,
+      "body_length": 0,
+      "path_count": 1,
+      "concurrency": 16,
+      "requests": 3000,
+      "keep_alive": true,
+      "warmup": 20,
+      "accept_encoding": null,
+      "completed": 3000,
+      "errors": 0,
+      "error_samples": [],
+      "warmup_errors": 0,
+      "warmup_error_samples": [],
+      "elapsed_s": 0.437,
+      "successful_requests_per_s": 6864.86,
+      "latency_ms": {
+        "p50": 1.897,
+        "p95": 4.85,
+        "p99": 6.64
+      },
+      "body_bytes": 48000
+    },
+    {
+      "scheme": "http",
+      "host": "127.0.0.1",
+      "port": 56189,
+      "path": "/proxy/api/status",
+      "paths_sha256": null,
+      "method": "GET",
+      "authentication": null,
+      "body_sha256": null,
+      "body_length": 0,
+      "path_count": 1,
+      "concurrency": 16,
+      "requests": 3000,
+      "keep_alive": true,
+      "warmup": 20,
+      "accept_encoding": null,
+      "completed": 3000,
+      "errors": 0,
+      "error_samples": [],
+      "warmup_errors": 0,
+      "warmup_error_samples": [],
+      "elapsed_s": 0.3892,
+      "successful_requests_per_s": 7707.26,
+      "latency_ms": {
+        "p50": 1.64,
+        "p95": 4.331,
+        "p99": 6.377
+      },
+      "body_bytes": 48000
+    },
+    {
+      "scheme": "http",
+      "host": "127.0.0.1",
+      "port": 56189,
+      "path": "/proxy/api/status",
+      "paths_sha256": null,
+      "method": "GET",
+      "authentication": null,
+      "body_sha256": null,
+      "body_length": 0,
+      "path_count": 1,
+      "concurrency": 16,
+      "requests": 3000,
+      "keep_alive": true,
+      "warmup": 20,
+      "accept_encoding": null,
+      "completed": 3000,
+      "errors": 0,
+      "error_samples": [],
+      "warmup_errors": 0,
+      "warmup_error_samples": [],
+      "elapsed_s": 0.3864,
+      "successful_requests_per_s": 7763.24,
+      "latency_ms": {
+        "p50": 1.585,
+        "p95": 4.438,
+        "p99": 6.939
+      },
+      "body_bytes": 48000
+    }
+  ],
+  "summary": {
+    "trials": 3,
+    "valid_trials": 3,
+    "completed": 9000,
+    "errors": 0,
+    "median": {
+      "successful_requests_per_s": 7707.26,
+      "latency_ms.p50": 1.64,
+      "latency_ms.p95": 4.438,
+      "latency_ms.p99": 6.64
+    }
+  }
+}

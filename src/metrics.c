@@ -7,6 +7,7 @@
 #include "logging.h"
 #include "auth.h"
 #include "deployment.h"
+#include "proxy.h"
 #include <stdio.h>
 #include <time.h>
 static uint64_t accepted, rejected, active, completed, aborted, bytes_sent, timeouts, invalid;
@@ -53,6 +54,14 @@ size_t metrics_render(char *buffer, size_t capacity) {
     GAUGE("connection_limit", limit);
     GAUGE("draining", draining);
     GAUGE("ready",deployment_ready());
+    struct proxy_stats proxy;proxy_snapshot(&proxy);
+    GAUGE("upstream_active_connections",proxy.active);
+    COUNTER("proxy_requests_total",proxy.requests);
+    COUNTER("upstream_connect_failures_total",proxy.connect_failures);
+    COUNTER("upstream_timeouts_total",proxy.timeouts);
+    COUNTER("upstream_invalid_responses_total",proxy.invalid_responses);
+    COUNTER("upstream_bytes_received_total",proxy.upstream_bytes);
+    COUNTER("proxy_body_bytes_sent_total",proxy.downstream_bytes);
     COUNTER("connections_accepted_total", accepted);
     COUNTER("connections_rejected_total", rejected);
     COUNTER("responses_completed_total", completed);

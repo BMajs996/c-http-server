@@ -1,0 +1,56 @@
+{
+  "format_version": 2,
+  "label": null,
+  "timestamp_utc": "2026-10-14T20:28:51.700352+00:00",
+  "environment": {
+    "python": "3.14.4",
+    "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.43",
+    "machine": "x86_64",
+    "processor_count": 12
+  },
+  "config": null,
+  "trials": [
+    {
+      "scheme": "http",
+      "host": "127.0.0.1",
+      "port": 56189,
+      "path": "/proxy/api/status",
+      "paths_sha256": null,
+      "method": "GET",
+      "authentication": null,
+      "body_sha256": null,
+      "body_length": 0,
+      "path_count": 1,
+      "concurrency": 16,
+      "requests": 2000,
+      "keep_alive": true,
+      "warmup": 0,
+      "accept_encoding": null,
+      "completed": 2000,
+      "errors": 0,
+      "error_samples": [],
+      "warmup_errors": 0,
+      "warmup_error_samples": [],
+      "elapsed_s": 0.233,
+      "successful_requests_per_s": 8582.16,
+      "latency_ms": {
+        "p50": 1.217,
+        "p95": 4.403,
+        "p99": 7.397
+      },
+      "body_bytes": 32000
+    }
+  ],
+  "summary": {
+    "trials": 1,
+    "valid_trials": 1,
+    "completed": 2000,
+    "errors": 0,
+    "median": {
+      "successful_requests_per_s": 8582.16,
+      "latency_ms.p50": 1.217,
+      "latency_ms.p95": 4.403,
+      "latency_ms.p99": 7.397
+    }
+  }
+}

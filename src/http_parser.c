@@ -1,19 +1,16 @@
 #include "http_parser.h"
+#include "http_syntax.h"
 #include <ctype.h>
 #include <openssl/crypto.h>
 #include <stdint.h>
 #include <string.h>
 #include <strings.h>
 
-static int token(unsigned char c) {
-    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-           (c >= '0' && c <= '9') || strchr("!#$%&'*+-.^_`|~", c) != NULL;
-}
 static int connection_tokens(char *value, int *close_requested, int *keep_requested) {
     for (;;) {
         while (*value == ' ' || *value == '\t') ++value;
         char *start = value;
-        while (*value && token((unsigned char)*value)) ++value;
+        while (*value && http_token((unsigned char)*value)) ++value;
         if (value == start) return 400;
         char *end = value;
         while (*value == ' ' || *value == '\t') ++value;
@@ -34,7 +31,7 @@ static int encoding_preferences(char *value,int *gzip,int *identity,int *wildcar
         while(*p==' ' || *p=='\t' || *p==',')++p;
         if(!*p)break;
         char *name=p;
-        while(*p && token((unsigned char)*p))++p;
+        while(*p && http_token((unsigned char)*p))++p;
         if(p==name)return 400;
         size_t length=(size_t)(p-name);
         while(*p==' ' || *p=='\t')++p;
@@ -82,7 +79,7 @@ static int parse_headers(char *text, struct http_request *r) {
     *version++ = 0;
     if (!*method || !*target || strchr(version, ' ')) return 400;
     for (const unsigned char *p = (unsigned char *)method; *p; ++p)
-        if (!token(*p)) return 400;
+        if (!http_token(*p)) return 400;
     if (strlen(method) >= sizeof r->method) return 400;
     strcpy(r->method, method);
     if (target[0] != '/') return 400;
@@ -104,16 +101,8 @@ static int parse_headers(char *text, struct http_request *r) {
         if (!end) return 400;
         if (end == line) break;
         *end = 0;
-        char *colon = strchr(line, ':');
-        if (!colon || colon == line) return 400;
-        for (char *p = line; p < colon; ++p) if (!token((unsigned char)*p)) return 400;
-        *colon = 0;
-        char *value = colon + 1;
-        for (const unsigned char *p = (unsigned char *)value; *p; ++p)
-            if ((*p < 32 && *p != '\t') || *p == 127) return 400;
-        while (*value == ' ' || *value == '\t') ++value;
-        char *tail = value + strlen(value);
-        while (tail > value && (tail[-1] == ' ' || tail[-1] == '\t')) *--tail = 0;
+        char *value;
+        if (http_split_field(line, &value) < 0) return 400;
         char *auth_value=NULL;size_t auth_capacity=0;unsigned auth_bit=0;
         if(!strcasecmp(line,"Authorization")){auth_value=r->authorization;auth_capacity=sizeof r->authorization;auth_bit=1;}
         else if(!strcasecmp(line,"X-Auth-Key-Id")){auth_value=r->auth_key_id;auth_capacity=sizeof r->auth_key_id;auth_bit=2;}

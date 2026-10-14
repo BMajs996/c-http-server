@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "connection.h"
+#include "proxy.h"
 #include "logging.h"
 #include "metrics.h"
 #include "config.h"
@@ -7,6 +8,7 @@
 #include "transport.h"
 #include "cache.h"
 #include "http_parser.h"
+#include "http_syntax.h"
 #include "router.h"
 #include "static_files.h"
 #include <errno.h>
@@ -28,7 +30,7 @@ extern atomic_int stopping;
 
 typedef enum {
     READING_HEADERS, READING_BODY, VALIDATING_REQUEST, PREPARING_RESPONSE,
-    WRITING_HEADERS, WRITING_BODY, RESPONSE_COMPLETE, CLOSING, WAIT_FILE_OPEN, WAIT_FILE_READ, TLS_HANDSHAKE, TLS_SHUTDOWN
+    WRITING_HEADERS, WRITING_BODY, RESPONSE_COMPLETE, CLOSING, WAIT_FILE_OPEN, WAIT_FILE_READ, TLS_HANDSHAKE, TLS_SHUTDOWN, PROXY_TRANSFER
 } connection_state;
 
 struct connection {
@@ -37,7 +39,7 @@ struct connection {
     struct http_request request;
     char input[HEADER_LIMIT + 1];
     size_t input_used, scan_from, request_length;
-    char output[1536], chunk[32768];
+    char output[4096], chunk[32768];
     size_t output_length, output_offset, inline_body_start, chunk_length, chunk_offset;
     const char *body, *type, *allow;
     char *request_body;
@@ -50,7 +52,7 @@ struct connection {
     int64_t started;
     uintmax_t sent;
     int logged;
-    char extra_headers[768];
+    char extra_headers[2304];
     io_job *job;
     struct static_file opened;
     int open_ready;
@@ -60,6 +62,8 @@ struct connection {
     file_cache_entry *cached;
     int sendfile_disabled;
     transport *socket_transport;
+    proxy *upstream;
+    int runnable;
 };
 
 static int64_t now_ms(void) {
@@ -70,6 +74,9 @@ static int64_t now_ms(void) {
 static const char *reason(int status) {
     switch (status) {
     case 200: return "OK";
+    case 308: return "Permanent Redirect";
+    case 502: return "Bad Gateway";
+    case 504: return "Gateway Timeout";
     case 206: return "Partial Content";
     case 304: return "Not Modified";
     case 416: return "Range Not Satisfiable";
@@ -110,14 +117,8 @@ static void read_error(connection *c, int status) {
 }
 static void read_headers(connection *c) {
     /* Search raw bytes: never let an embedded NUL hide a terminator. */
-    for (size_t i = c->scan_from; i + 3 < c->input_used; ++i) {
-        if (!memcmp(c->input + i, "\r\n\r\n", 4)) {
-            c->request_length = i + 4;
-            c->state = VALIDATING_REQUEST;
-            return;
-        }
-    }
-    c->scan_from = c->input_used > 3 ? c->input_used - 3 : 0;
+    c->request_length=http_header_end(c->input,c->input_used,&c->scan_from);
+    if(c->request_length){c->state=VALIDATING_REQUEST;return;}
     if (c->input_used == HEADER_LIMIT) { read_error(c, 431); return; }
     ssize_t n = transport_read(c->socket_transport,c->input+c->input_used,HEADER_LIMIT-c->input_used,&c->interest);
     if (n > 0) {
@@ -129,12 +130,18 @@ static void read_headers(connection *c) {
 }
 static void validate(connection *c) {
     int status = parse_request(c->input, c->request_length, &c->request);
+    enum proxy_route_kind proxied=!status?proxy_route(c->request.target):PROXY_LOCAL;
+    if(proxied==PROXY_FORWARD) {
+        c->allow=proxy_allow();
+        if(!proxy_method(c->request.method))status=405;
+        else c->upstream=proxy_create(&c->request,c->input,c->request_length,c->fd,&status);
+    }
     size_t left = c->input_used - c->request_length;
     memmove(c->input, c->input + c->request_length, left);
     OPENSSL_cleanse(c->input+left,c->input_used-left);
     c->input_used = left;
     c->scan_from = 0;
-    if (!status) status = route_check(&c->request,&c->allow);
+    if (!status && !proxied) status = route_check(&c->request,&c->allow);
     if (!status) status = auth_headers(&c->request,route_auth(c->request.target));
     c->keep_alive = status == 0 && !c->draining && c->request.keep_alive && c->completed + 1 < MAX_REQUESTS;
     if (status) { metrics_request_rejected(); error_response(c, status); }
@@ -159,6 +166,15 @@ static void read_body(connection *c) {
     if(c->body_used==c->request.content_length)c->state=PREPARING_RESPONSE;
 }
 static void prepare(connection *c) {
+    if(!c->status && c->upstream) {
+        proxy_start(c->upstream,c->request_body?c->request_body:"",c->keep_alive,now_ms());
+        c->deadline=proxy_progress(c->upstream).deadline;c->state=PROXY_TRANSFER;return;
+    }
+    if(!c->status && proxy_route(c->request.target)==PROXY_REDIRECT) {
+        const char *query=strchr(c->request.target,'?');
+        snprintf(c->extra_headers,sizeof c->extra_headers,"Location: %s%s\r\n",config.proxy_prefix,query?query:"");
+        error_response(c,308);
+    }
     if(!c->status && route_auth(c->request.target)==AUTH_SIGNED) {
         int status=auth_verify(&c->request,c->request_body?c->request_body:"");
         if(status){metrics_request_rejected();c->keep_alive=0;error_response(c,status);}
@@ -301,6 +317,7 @@ static void write_body(connection *c) {
     if (rc < 0) c->state = CLOSING;
 }
 static void complete(connection *c) {
+    proxy_destroy(c->upstream);c->upstream=NULL;
     int64_t elapsed=now_ms()-c->started;
     metrics_response(c->status, c->sent, 1, elapsed);
     log_request(c->fd, c->completed + 1, c->request.target, c->request.method,
@@ -343,7 +360,7 @@ connection *connection_create(int socket_fd, int root_fd) {
 int connection_fd(const connection *c) { return c->fd; }
 int connection_expired(const connection *c, int64_t now) { return now >= c->deadline; }
 uint32_t connection_step(connection *c) {
-    c->interest = 0;
+    c->interest = 0;c->runnable=0;
     /* A bounded turn prevents a large transfer or pipeline monopolizing the
      * reactor. If CPU work remains, writable readiness schedules another turn.
      * EAGAIN returns immediately to epoll; never wait inside this FSM.
@@ -351,7 +368,7 @@ uint32_t connection_step(connection *c) {
     for (unsigned turn = 0; turn < 64 && c->state != CLOSING && !stopping; ++turn) {
         int64_t now = now_ms();
         if (now < 0) return 0;
-        if (now >= c->deadline) {
+        if (now >= c->deadline && c->state!=PROXY_TRANSFER) {
             if ((c->state == READING_HEADERS && c->input_used) || c->state==READING_BODY) read_error(c, 408);
             else if (c->state != PREPARING_RESPONSE) {
                 if (!c->timed_out) { metrics_timeout(); c->timed_out = 1; }
@@ -369,6 +386,20 @@ uint32_t connection_step(connection *c) {
             int result=transport_shutdown(c->socket_transport,&c->interest);
             if(result!=0)c->state=CLOSING;
             break;
+        }
+        case PROXY_TRANSFER: {
+            int result=proxy_step(c->upstream,c->socket_transport,now,&c->interest);
+            struct proxy_progress progress=proxy_progress(c->upstream);
+            c->deadline=progress.deadline;c->sent=progress.sent;c->status=progress.status;
+            if(result<0) {
+                if(!progress.can_send_error){c->state=CLOSING;break;}
+                int error=c->status;proxy_destroy(c->upstream);c->upstream=NULL;
+                c->keep_alive=0;error_response(c,error);c->state=PREPARING_RESPONSE;
+                c->deadline=now+RESPONSE_TIMEOUT_MS;break;
+            }
+            if(result>0){c->keep_alive=c->keep_alive && progress.keep_alive;c->state=RESPONSE_COMPLETE;break;}
+            c->runnable=progress.runnable;
+            return c->interest?c->interest:CONNECTION_WAIT_IO;
         }
         case READING_HEADERS: read_headers(c); break;
         case READING_BODY: read_body(c); break;
@@ -406,6 +437,7 @@ uint32_t connection_step(connection *c) {
 void connection_destroy(connection *c) {
     if (!c) return;
     if (c->job) c->job->owner = NULL; /* Orphan result is released by reactor. */
+    proxy_destroy(c->upstream);
     free(c->request_body);
     free(c->opened.data);
     file_cache_release(c->cached);
@@ -451,20 +483,13 @@ int connection_waiting(const connection *c) {
 }
 
 void connection_drain(connection *c) {
-    c->draining = 1; c->keep_alive = 0;
+    c->draining = 1; c->keep_alive = 0;proxy_drain(c->upstream);
     if (c->state == READING_HEADERS || c->state == READING_BODY || c->state == TLS_HANDSHAKE) { c->state = CLOSING; return; }
-    /* Never rewrite a header after sending any of its bytes. Persistence can
-     * end at the response boundary even if keep-alive was already advertised. */
-    if (c->state == WRITING_HEADERS && c->output_offset == 0) {
-        char *field = strstr(c->output, "Connection: keep-alive\r\n");
-        if (field) {
-            const char *replacement = "Connection: close\r\n";
-            size_t old = strlen("Connection: keep-alive\r\n"), length = strlen(replacement);
-            size_t at = (size_t)(field - c->output);
-            memmove(field + length, field + old, c->output_length - at - old);
-            memcpy(field, replacement, length);
-            c->output_length -= old - length;
-            if(c->inline_body_start)c->inline_body_start-=old-length;
-        }
-    }
+    /* Existing output may already be a pending TLS write. Close at the
+     * response boundary without mutating its buffer or retry length. */
 }
+struct connection_watch connection_upstream_watch(const connection *c) {
+    struct proxy_progress progress=proxy_progress(c->upstream);
+    return (struct connection_watch){progress.fd,progress.interest};
+}
+int connection_runnable(const connection *c){return c->runnable;}
