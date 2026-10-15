@@ -14,7 +14,7 @@ const char *http_field_value(const struct http_fields *fields,size_t index);
 int http_connection_valid(const struct http_fields *fields);
 int http_field_hop(const struct http_fields *fields,size_t index);
 enum http_framing { HTTP_NONE, HTTP_LENGTH, HTTP_CHUNKED, HTTP_EOF };
-struct http_response { struct http_fields headers; int status; enum http_framing framing; uint64_t length; };
+struct http_response { struct http_fields headers; int status,persistent; enum http_framing framing; uint64_t length; };
 int http_response_parse(struct http_response *response,const char *data,size_t length,int head);
 enum http_chunk_state { CHUNK_SIZE, CHUNK_DATA, CHUNK_CR, CHUNK_LF, CHUNK_TRAILERS, CHUNK_DONE };
 struct http_chunks { uint64_t remaining; enum http_chunk_state state; char line[1024]; size_t used, trailer_bytes, trailer_count; };

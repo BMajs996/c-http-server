@@ -148,7 +148,7 @@ in-place modification can change an ongoing uncached transfer.
 
 ## Single-backend reverse proxy
 
-Phase 8 adds an optional proxy route. Start a local backend in one terminal:
+Start a local backend in one terminal:
 
 ```sh
 python3 -m http.server 9000 --bind 127.0.0.1 --directory public
@@ -178,7 +178,10 @@ handlers. Use an application backend to try POST, PUT, PATCH, or DELETE.
 | upstream_port | 0 (disabled) | Backend port; 1–65535 when configured |
 | upstream_host | empty | Host authority sent to the backend |
 | upstream_connect_timeout_ms | 2000 | Connect deadline; 1–300000 ms |
-| upstream_response_timeout_ms | 30000 | Total post-connect transaction deadline; 1–300000 ms |
+| upstream_handshake_timeout_ms | 3000 | TLS handshake deadline after TCP connect; 1–300000 ms |
+| upstream_write_timeout_ms | 5000 | Request write inactivity; 1–300000 ms |
+| upstream_read_timeout_ms | 5000 | Response read inactivity; 1–300000 ms |
+| upstream_response_timeout_ms | 30000 | Total post-TCP budget, including TLS handshake and downstream backpressure; 1–300000 ms |
 
 Supply prefix, address, port, and Host together. No proxy settings means the
 existing local behavior. Prefixes use ASCII letters, digits, `/`, `-`, `_`, and
@@ -201,7 +204,7 @@ validation still applies, including credential-header length limits.
 Chunked request uploads, Expect, CONNECT, and Upgrade are unsupported.
 
 The proxy reconstructs HTTP/1.1 requests with configured Host, validated
-Content-Length, and Connection: close. Connection-specific fields, including
+Content-Length, and Connection: keep-alive when pooling is enabled (close otherwise). Connection-specific fields, including
 fields nominated by Connection, are removed in each direction; nominations of
 Host, Content-Length, or Transfer-Encoding are rejected. Client-provided
 Forwarded and X-Forwarded-* fields are removed; X-Forwarded-For is generated from
@@ -211,9 +214,9 @@ backend; the proxy route itself is public and does not inherit local private
 API authentication policies. Backend Location and cookie Path attributes pass
 through unchanged; configure the application for its external proxy prefix.
 
-Each client processes one upstream transaction at a time, using a fresh backend
-connection. Upstream HTTP is plain TCP; client HTTPS uses the existing TLS
-transport. Fixed-length, chunked, close-delimited, and bodyless responses are
+Each client processes one upstream transaction at a time. Backend HTTP or
+verified HTTPS and optional mTLS are independent of client HTTP/HTTPS.
+Fixed-length, chunked, close-delimited, and bodyless responses are
 handled. Chunk framing is incrementally validated and decoded; HTTP/1.1 clients
 receive newly generated chunking when length is unknown. HTTP/1.0 clients use
 connection-close framing in that case. Chunk extensions are bounded; trailers
@@ -224,8 +227,10 @@ responses are forwarded only to HTTP/1.1 clients, with an eight-response/8 KiB
 budget. HTTP/1.0 clients receive only the final response.
 
 Fixed buffers and suspended upstream reads bound memory under slow clients;
-TLS partial writes preserve buffers until completion. The response deadline is
-a total budget including downstream backpressure, not a sliding idle timer.
+TLS partial writes preserve buffers until completion. Read inactivity starts
+after the request is sent (or an early final response starts), resets on backend
+bytes, and pauses while flushing output to a slow client. Write inactivity resets
+on request write progress. The total post-TCP deadline always remains active.
 A declared chunk size never controls allocation. Client keep-alive and ordered
 pipelining resume only after valid response completion.
 
@@ -240,15 +245,95 @@ backend error responses pass through. No automatic retries are attempted.
 
 Shutdown clears readiness and closes the listener, permits active proxy
 responses to finish within shutdown_ms, and then closes remaining connections.
-Upstream sessions are owned by their client and released on completion/failure;
-an otherwise silent peer can remain until its transaction deadline if TCP
-has not exposed a definitive disconnect.
+Leased upstream sessions are released on completion/failure. Idle sessions are
+closed when draining starts; new leases are refused. TLS close_notify exchanges
+are driven by the reactor with a one-second deadline and bounded by shutdown_ms.
+An otherwise silent peer can remain until its transaction deadline if TCP has
+not exposed a definitive disconnect.
 
 New metrics include upstream_active_connections, proxy_requests_total,
 upstream_connect_failures_total, upstream_timeouts_total,
-upstream_invalid_responses_total, upstream_bytes_received_total (wire bytes,
-including headers), and proxy_body_bytes_sent_total (payload only), all with
+upstream_invalid_responses_total, upstream_bytes_received_total (HTTP bytes,
+including headers, excluding TLS overhead), and proxy_body_bytes_sent_total (payload only), all with
 the `c_http_` prefix. Backend health does not change lifecycle readiness.
+
+### Backend connection pooling
+
+Pooling is off by default, preserving fresh connections for existing configs.
+Use [server-pool.conf](server-pool.conf) with an HTTP/1.1 backend:
+
+```sh
+# Backend in another terminal:
+./http_server 9000 public
+./http_server --check-config server-pool.conf
+./http_server --config server-pool.conf
+# Repeat the proxy request, then inspect reuse:
+curl -s http://127.0.0.1:8080/metrics | grep upstream_
+```
+
+| Setting | Default | Bounds / behavior |
+| --- | --- | --- |
+| upstream_pool_enabled | 0 | 0 or 1; requires a configured proxy |
+| upstream_pool_max_connections | 64 | 1–16384; includes leased, idle, and closing sockets |
+| upstream_pool_idle_limit | 16 | 0–total limit |
+| upstream_pool_idle_timeout_ms | 15000 | 1–300000 ms |
+| upstream_pool_max_age_ms | 300000 | 1–3600000 ms from socket creation |
+| upstream_pool_max_requests | 1000 | 1–1000000 transactions per socket |
+
+A full pool immediately returns 503 without a waiting queue or retry. Idle
+connections belong to the pool, so reuse works across different client sockets.
+Age and request limits prevent another lease; they do not interrupt active work.
+With pooling off, fresh and closing sockets are bounded by max_connections.
+
+Only a completely sent request and a completely framed HTTP/1.1 response can be
+reused. Connection: close, HTTP/1.0, EOF framing, extra backend bytes, failures,
+or unfinished TLS operations prevent reuse. Idle sockets are watched for
+disconnects and unexpected data; TLS control records are processed without
+forwarding them. A peer can still close immediately after checkout; this request
+fails normally without an automatic retry.
+
+Pool metrics are upstream_pool_total, upstream_pool_leased, upstream_pool_idle,
+upstream_pool_closing, upstream_connections_opened_total,
+upstream_connections_reused_total, upstream_pool_exhaustions_total,
+upstream_pool_discards_total, and upstream_pool_expirations_total, prefixed with
+`c_http_`. Discards count physically destroyed sockets, including failures and
+normal closes; expirations include idle/age limits and forced close deadlines.
+upstream_active_connections continues to count transactions holding a lease,
+including connect/handshake, rather than idle/closing sockets.
+
+### Verified backend HTTPS and mTLS
+
+Enable TLS independently of pooling. Add these keys to the proxy config:
+
+```ini
+upstream_tls = 1
+upstream_tls_server_name = backend.example.test
+upstream_tls_ca_file = /etc/c-http-server/backend-ca.pem
+# Optional mTLS: supply both files, or neither.
+upstream_tls_client_cert = /etc/c-http-server/client-chain.pem
+upstream_tls_client_key = /etc/c-http-server/client.key
+```
+
+upstream_address remains a numeric connection address. upstream_tls_server_name
+is the certificate identity: DNS names use SAN verification and SNI; IP literals
+use IP SAN verification without SNI. upstream_host still controls the HTTP Host
+header independently. TLS 1.2 or newer is required; ALPN offers HTTP/1.1 only
+(a backend without ALPN is accepted). There is no insecure verification switch.
+
+The CA file is an explicit PEM trust bundle, with no system-store fallback.
+mTLS uses a PEM client certificate chain and matching unencrypted PEM private
+key. Encrypted keys fail without a password prompt. Startup and --check-config
+load and validate local TLS inputs without connecting; peer trust, validity,
+identity, and client-certificate acceptance are checked during live handshakes.
+TLS=0 builds reject upstream TLS settings. CA/certificate/key or upstream/pool
+configuration changes require a restart; SIGHUP still reloads only API credentials.
+
+The live SSL session is retained when a connection returns to the pool. Separate
+metrics count upstream_tls_handshakes_total, upstream_tls_handshake_failures_total,
+upstream_tls_verification_failures_total, and upstream_tls_io_failures_total.
+TLS failures produce 502 before response commitment; handshake/inactivity/total
+deadlines produce 504. A TLS 1.3 client-certificate rejection can arrive after
+the local handshake completes and therefore count as an I/O failure.
 
 ## File content cache
 

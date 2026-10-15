@@ -16,6 +16,11 @@ static void chunks(const char *wire,const char *expected,int valid) {
     if(valid)assert(used==strlen(expected) && !memcmp(decoded,expected,used));
 }
 int main(void) {
+    const char *persistence[]={"HTTP/1.1 200 OK\r\nConnection: keep-alive, X-Test\r\n\r\n","HTTP/1.1 200 OK\r\nConnection: keep-alive\r\nConnection: ClOsE\r\n\r\n","HTTP/1.0 200 OK\r\nConnection: keep-alive\r\n\r\n"};
+    for(size_t i=0;i<sizeof persistence/sizeof persistence[0];i++) {
+        struct http_response r;assert(!http_response_parse(&r,persistence[i],strlen(persistence[i]),0));
+        assert(r.persistent==(i==0));
+    }
     check("HTTP/1.1 200 OK\r\nContent-Length: 42\r\n\r\n",0,1,HTTP_LENGTH);
     check("HTTP/1.0 200 OK\r\n\r\n",0,1,HTTP_EOF);
     check("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",0,1,HTTP_CHUNKED);

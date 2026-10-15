@@ -7,11 +7,11 @@ ifeq ($(TLS),1)
 CPPFLAGS += -DWITH_TLS
 LDLIBS += -lssl
 endif
-SOURCES = src/server.c src/connection.c src/http_parser.c src/static_files.c src/logging.c src/cache.c src/file_io.c src/metrics.c src/config.c src/file_cache.c src/transport.c src/router.c src/json.c src/auth.c src/deployment.c src/proxy.c src/http_response.c
+SOURCES = src/server.c src/connection.c src/http_parser.c src/static_files.c src/logging.c src/cache.c src/file_io.c src/metrics.c src/config.c src/file_cache.c src/transport.c src/router.c src/json.c src/auth.c src/deployment.c src/proxy.c src/http_response.c src/upstream.c src/upstream_pool.c
 
 .PHONY: all clean test
 all: http_server
-http_server: $(SOURCES) include/connection.h include/http_parser.h include/static_files.h include/logging.h include/cache.h include/file_io.h include/metrics.h include/config.h include/file_cache.h include/transport.h include/router.h include/json.h include/auth.h include/deployment.h include/proxy.h include/http_response.h include/http_syntax.h
+http_server: $(SOURCES) include/connection.h include/http_parser.h include/static_files.h include/logging.h include/cache.h include/file_io.h include/metrics.h include/config.h include/file_cache.h include/transport.h include/router.h include/json.h include/auth.h include/deployment.h include/proxy.h include/upstream.h include/upstream_pool.h include/http_response.h include/http_syntax.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -pthread $(SOURCES) -o $@ $(LDLIBS)
 test: http_server test_file_cache test_auth test_deployment test_http_response test_proxy_retry
 	./test_file_cache
@@ -21,6 +21,7 @@ test: http_server test_file_cache test_auth test_deployment test_http_response t
 	./test_proxy_retry
 	python3 tests/test_server.py
 	python3 tests/test_proxy.py
+	python3 tests/test_upstream.py
 	python3 tests/test_precompress.py
 	python3 tests/test_auth_tools.py
 clean:

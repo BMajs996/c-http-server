@@ -11,6 +11,9 @@ void config_defaults(void) {
         .request_timeout_ms=5000,.response_timeout_ms=30000,.max_requests=100,
         .file_workers=4,.file_job_limit=64,.log_queue_limit=1024,
         .auth_timestamp_window_s=60,.auth_nonce_entries=4096,
+        .upstream_pool_max_connections=64,.upstream_pool_idle_limit=16,.upstream_pool_idle_timeout_ms=15000,
+        .upstream_pool_max_age_ms=300000,.upstream_pool_max_requests=1000,
+        .upstream_handshake_timeout_ms=3000,.upstream_read_timeout_ms=5000,.upstream_write_timeout_ms=5000,
         .upstream_connect_timeout_ms=2000,.upstream_response_timeout_ms=30000,
         .cache_max_file_bytes=65536,.cache_entries=256,.cache_ttl_ms=1000};
     strcpy(config.bind_address,"127.0.0.1");
@@ -24,6 +27,16 @@ static char *trim(char *value) {
 }
 int config_load(const char *path) {
     struct option { const char *name; unsigned *value; unsigned low, high; } options[] = {
+        {"upstream_handshake_timeout_ms",&config.upstream_handshake_timeout_ms,1,300000},
+        {"upstream_read_timeout_ms",&config.upstream_read_timeout_ms,1,300000},
+        {"upstream_write_timeout_ms",&config.upstream_write_timeout_ms,1,300000},
+        {"upstream_pool_enabled",&config.upstream_pool_enabled,0,1},
+        {"upstream_pool_max_connections",&config.upstream_pool_max_connections,1,16384},
+        {"upstream_pool_idle_limit",&config.upstream_pool_idle_limit,0,16384},
+        {"upstream_pool_idle_timeout_ms",&config.upstream_pool_idle_timeout_ms,1,300000},
+        {"upstream_pool_max_age_ms",&config.upstream_pool_max_age_ms,1,3600000},
+        {"upstream_pool_max_requests",&config.upstream_pool_max_requests,1,1000000},
+        {"upstream_tls",&config.upstream_tls,0,1},
         {"upstream_port",&config.upstream_port,1,65535},
         {"upstream_connect_timeout_ms",&config.upstream_connect_timeout_ms,1,300000},
         {"upstream_response_timeout_ms",&config.upstream_response_timeout_ms,1,300000},
@@ -37,6 +50,10 @@ int config_load(const char *path) {
         {"auth_nonce_entries",&config.auth_nonce_entries,1,65536}
     };
     struct text_option { const char *name; char *value; size_t size; int allow_empty; } texts[]={
+        {"upstream_tls_server_name",config.upstream_tls_server_name,sizeof config.upstream_tls_server_name,1},
+        {"upstream_tls_ca_file",config.upstream_tls_ca_file,sizeof config.upstream_tls_ca_file,1},
+        {"upstream_tls_client_cert",config.upstream_tls_client_cert,sizeof config.upstream_tls_client_cert,1},
+        {"upstream_tls_client_key",config.upstream_tls_client_key,sizeof config.upstream_tls_client_key,1},
         {"proxy_prefix",config.proxy_prefix,sizeof config.proxy_prefix,1},
         {"upstream_address",config.upstream_address,sizeof config.upstream_address,1},
         {"upstream_host",config.upstream_host,sizeof config.upstream_host,1},
@@ -47,14 +64,14 @@ int config_load(const char *path) {
         {"tls_cert",config.tls_cert,sizeof config.tls_cert,1},{"tls_key",config.tls_key,sizeof config.tls_key,1}
     };
     FILE *file=fopen(path,"r");if(!file){perror("configuration");return -1;}
-    char line[4096], keys[48][64];unsigned line_no=0,key_count=0;
+    char line[4096], keys[64][64];unsigned line_no=0,key_count=0;
     while(fgets(line,sizeof line,file)) {
         ++line_no;
         if(!strchr(line,'\n') && !feof(file)) goto invalid;
         char *key=trim(line);if(!*key || *key=='#')continue;
         char *equal=strchr(key,'=');if(!equal)goto invalid;
         *equal=0;key=trim(key);char *value=trim(equal+1);
-        if(!*key || strlen(key)>=64 || key_count>=48)goto invalid;
+        if(!*key || strlen(key)>=64 || key_count>=64)goto invalid;
         for(unsigned i=0;i<key_count;++i)if(!strcmp(keys[i],key))goto invalid;
         strcpy(keys[key_count++],key);
         int found=0;

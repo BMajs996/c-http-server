@@ -83,5 +83,16 @@ int main(void) {
         proxy_destroy(p);close(backend);
     }
     struct proxy_stats stats;proxy_snapshot(&stats);assert(!stats.active);
+    /* Fill a real nonblocking upstream socket before its request write.
+     * A stalled writer has its own deadline, independent of response reads. */
+    p=transaction("",&backend);config.upstream_write_timeout_ms=80;
+    int fd=proxy_progress(p).fd,buffer=1024;
+    assert(!setsockopt(fd,SOL_SOCKET,SO_SNDBUF,&buffer,sizeof buffer));
+    char padding[16384]={0};
+    while(send(fd,padding,sizeof padding,MSG_NOSIGNAL)>0){}
+    client=(transport){0};assert(!proxy_step(p,&client,1,&interest));
+    assert(proxy_progress(p).deadline==81);
+    assert(proxy_step(p,&client,81,&interest)==-1 && proxy_progress(p).status==504);
+    proxy_destroy(p);close(backend);
     puts("Pending/partial client writes remain stable during drain and timeout");return 0;
 }

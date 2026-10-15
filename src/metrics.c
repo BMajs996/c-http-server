@@ -8,6 +8,7 @@
 #include "auth.h"
 #include "deployment.h"
 #include "proxy.h"
+#include "upstream_pool.h"
 #include <stdio.h>
 #include <time.h>
 static uint64_t accepted, rejected, active, completed, aborted, bytes_sent, timeouts, invalid;
@@ -56,6 +57,19 @@ size_t metrics_render(char *buffer, size_t capacity) {
     GAUGE("ready",deployment_ready());
     struct proxy_stats proxy;proxy_snapshot(&proxy);
     GAUGE("upstream_active_connections",proxy.active);
+    struct upstream_tls_stats tls;upstream_tls_snapshot(&tls);
+    COUNTER("upstream_tls_handshakes_total",tls.handshakes);
+    COUNTER("upstream_tls_handshake_failures_total",tls.handshake_failures);
+    COUNTER("upstream_tls_verification_failures_total",tls.verification_failures);
+    COUNTER("upstream_tls_io_failures_total",tls.io_failures);
+    struct upstream_pool_stats pool;upstream_pool_snapshot(&pool);
+    GAUGE("upstream_pool_total",pool.total);GAUGE("upstream_pool_idle",pool.idle);
+    GAUGE("upstream_pool_leased",pool.leased);GAUGE("upstream_pool_closing",pool.closing);
+    COUNTER("upstream_connections_opened_total",pool.opened);
+    COUNTER("upstream_connections_reused_total",pool.reused);
+    COUNTER("upstream_pool_discards_total",pool.discarded);
+    COUNTER("upstream_pool_exhaustions_total",pool.exhaustions);
+    COUNTER("upstream_pool_expirations_total",pool.expired);
     COUNTER("proxy_requests_total",proxy.requests);
     COUNTER("upstream_connect_failures_total",proxy.connect_failures);
     COUNTER("upstream_timeouts_total",proxy.timeouts);

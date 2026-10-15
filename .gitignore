@@ -32,3 +32,8 @@ __pycache__/
 /.secrets/
 *.credentials
 *.auth-client
+
+# Local project planning and validation notes
+/ROADMAP.md
+/VALIDATION.md
+/FUTURE_PROJECT_DIRECTIONS.md
