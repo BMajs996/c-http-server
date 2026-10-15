@@ -8,6 +8,12 @@ typedef struct {
     unsigned cache_entries, cache_ttl_ms;
     unsigned auth_timestamp_window_s, auth_nonce_entries;
     unsigned upstream_port, upstream_connect_timeout_ms, upstream_response_timeout_ms;
+    unsigned upstream_handshake_timeout_ms, upstream_read_timeout_ms, upstream_write_timeout_ms;
+    unsigned upstream_pool_enabled,upstream_pool_max_connections,upstream_pool_idle_limit;
+    unsigned upstream_pool_idle_timeout_ms,upstream_pool_max_age_ms,upstream_pool_max_requests;
+    unsigned upstream_tls;
+    char upstream_tls_server_name[256],upstream_tls_ca_file[2048];
+    char upstream_tls_client_cert[2048],upstream_tls_client_key[2048];
     char proxy_prefix[256], upstream_address[46], upstream_host[256];
     char bind_address[46];
     char auth_credentials_file[2048];

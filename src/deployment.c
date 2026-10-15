@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "deployment.h"
 #include "proxy.h"
+#include "upstream.h"
 #include "auth.h"
 #include "config.h"
 #include "logging.h"
@@ -60,6 +61,8 @@ int deployment_check_config(void) {
     close(root);
     if(transport_init()<0)return -1;
     transport_close();
+    if(upstream_init()<0)return -1;
+    upstream_close();
     if(*config.auth_credentials_file) {
         auth_keyset *set=auth_load(config.auth_credentials_file,config.document_root);
         if(!set){fprintf(stderr,"Authentication credential validation failed\n");return -1;}

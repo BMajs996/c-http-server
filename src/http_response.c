@@ -40,20 +40,24 @@ int http_connection_valid(const struct http_fields *f) {
     }
     return 1;
 }
-int http_field_hop(const struct http_fields *f,size_t index) {
-    const char *name=http_field_name(f,index);
-    const char *fixed[]={"Connection","Keep-Alive","Proxy-Connection","Proxy-Authenticate","Proxy-Authorization","TE","Trailer","Transfer-Encoding","Upgrade"};
-    for(size_t i=0;i<sizeof fixed/sizeof fixed[0];i++)if(!strcasecmp(name,fixed[i]))return 1;
+static int connection_has(const struct http_fields *f,const char *name) {
+    size_t length=strlen(name);
     for(size_t i=0;i<f->count;i++)if(!strcasecmp(http_field_name(f,i),"Connection")) {
         const char *p=http_field_value(f,i);
         while(*p) {
             while(*p==' ' || *p=='\t' || *p==',')p++;
             const char *start=p;while(http_token((unsigned char)*p))p++;
-            if(strlen(name)==(size_t)(p-start) && !strncasecmp(name,start,(size_t)(p-start)))return 1;
+            if(length==(size_t)(p-start) && !strncasecmp(name,start,length))return 1;
             if(p==start && *p)p++;
         }
     }
     return 0;
+}
+int http_field_hop(const struct http_fields *f,size_t index) {
+    const char *name=http_field_name(f,index);
+    const char *fixed[]={"Connection","Keep-Alive","Proxy-Connection","Proxy-Authenticate","Proxy-Authorization","TE","Trailer","Transfer-Encoding","Upgrade"};
+    for(size_t i=0;i<sizeof fixed/sizeof fixed[0];i++)if(!strcasecmp(name,fixed[i]))return 1;
+    return connection_has(f,name);
 }
 static int decimal(const char *p,uint64_t *value) {
     if(!*p)return -1;
@@ -69,6 +73,7 @@ int http_response_parse(struct http_response *r,const char *data,size_t length,i
     for(int i=9;i<12;i++)if(line[i]<'0'||line[i]>'9')return -1;
     r->status=(line[9]-'0')*100+(line[10]-'0')*10+line[11]-'0';
     if(r->status<100 || r->status>599 || r->status==101)return -1;
+    r->persistent=!strncmp(line,"HTTP/1.1 ",9) && !connection_has(&r->headers,"close");
     unsigned lengths=0,transfers=0;
     for(size_t i=0;i<r->headers.count;i++) {
         const char *name=http_field_name(&r->headers,i),*value=http_field_value(&r->headers,i);

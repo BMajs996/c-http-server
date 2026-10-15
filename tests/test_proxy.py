@@ -18,6 +18,7 @@ LARGE = bytes(range(256)) * 32768
 
 class Backend(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
+    request_queue_size = 128  # Keep the fixture backlog above test concurrency.
     daemon_threads = True
 
 class Handler(socketserver.BaseRequestHandler):
@@ -77,12 +78,14 @@ class Handler(socketserver.BaseRequestHandler):
             if method != 'HEAD': self.request.sendall(payload)
         except (OSError, ValueError): pass
 
-class ProxyTests(unittest.TestCase):
+class ProxyHarness(unittest.TestCase):
+    backend_type = Backend
+    handler_type = Handler
     @classmethod
     def setUpClass(cls):
         cls.temp = tempfile.TemporaryDirectory()
         cls.base = Path(cls.temp.name)
-        cls.backend = Backend(('127.0.0.1',0),Handler)
+        cls.backend = cls.backend_type(('127.0.0.1',0),cls.handler_type)
         cls.thread = threading.Thread(target=cls.backend.serve_forever,daemon=True);cls.thread.start()
         cls.backend_port = cls.backend.server_address[1]
 
@@ -129,6 +132,7 @@ class ProxyTests(unittest.TestCase):
                 data+=part
             return data
 
+class ProxyTests(ProxyHarness):
     def test_methods_paths_and_headers(self):
         for method in ['GET','HEAD','POST','PUT','PATCH','DELETE','OPTIONS']:
             status,headers,body=self.request('/proxy/items?q=%2F&x=1',method,None if method=='HEAD' else b'\x00binary\xff',{'Content-Type':'application/octet-stream','Connection':'close, X-Hop','X-Hop':'secret','Forwarded':'for=spoof','X-Forwarded-For':'spoof','X-Custom':'keep','Authorization':'Bearer backend'})
@@ -193,6 +197,10 @@ class ProxyTests(unittest.TestCase):
         self.assertIn(b'200 OK',rest[len(LARGE):]);self.assertTrue(rest.endswith(b'{"status":"ok"}\n'))
 
     def test_timeouts_refusal_and_local_responsiveness(self):
+        _,idle_port=self.launch(upstream_response_timeout_ms=2000,upstream_read_timeout_ms=100)
+        started=time.monotonic()
+        self.assertEqual(self.request('/proxy/slow-headers',port=idle_port)[0],504)
+        self.assertLess(time.monotonic()-started,.7)
         _,port=self.launch(upstream_response_timeout_ms=150)
         started=time.monotonic();self.assertEqual(self.request('/proxy/slow-headers',port=port)[0],504)
         self.assertLess(time.monotonic()-started,1)

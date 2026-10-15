@@ -1,13 +1,12 @@
 #define _POSIX_C_SOURCE 200809L
 #include "proxy.h"
+#include "upstream_pool.h"
 #include "config.h"
 #include "deployment.h"
 #include "http_response.h"
 #include "http_syntax.h"
 #include <arpa/inet.h>
 #include <openssl/crypto.h>
-#include <errno.h>
-#include <netinet/tcp.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,12 +14,14 @@
 #include <strings.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
-#include <unistd.h>
+#include <time.h>
 #define WIRE_LIMIT (HEADER_LIMIT+2048)
 struct proxy {
-    int fd,connecting,head,http11,keep_alive,status,error,committed,finished,runnable,client_retry;
+    upstream *upstream;
+    int reusable,connected,head,http11,keep_alive,status,error,committed,finished,runnable,client_retry;
     uint32_t interest;
-    int64_t deadline;
+    int64_t deadline,total_deadline,write_deadline,read_deadline;
+    int read_active;
     char request[WIRE_LIMIT];size_t request_length,request_offset,body_length,body_offset;
     const char *body;
     char input[32768];size_t input_length,header_scan;
@@ -58,6 +59,14 @@ enum proxy_route_kind proxy_route(const char *target) {
 }
 int proxy_config_validate(void) {
     int enabled=*config.proxy_prefix!=0;
+    if(config.upstream_pool_idle_limit>config.upstream_pool_max_connections || (config.upstream_pool_enabled && !enabled))goto invalid;
+    int tls_files=*config.upstream_tls_server_name || *config.upstream_tls_ca_file || *config.upstream_tls_client_cert || *config.upstream_tls_client_key;
+    if((config.upstream_tls && (!enabled || !*config.upstream_tls_server_name || !*config.upstream_tls_ca_file)) ||
+       (!config.upstream_tls && tls_files) || (!!*config.upstream_tls_client_cert!=!!*config.upstream_tls_client_key))goto invalid;
+    if(config.upstream_tls) {
+        const unsigned char *name=(unsigned char *)config.upstream_tls_server_name;
+        for(;*name;name++)if(!((*name>='a'&&*name<='z')||(*name>='A'&&*name<='Z')||(*name>='0'&&*name<='9')||strchr(".-:",*name)))goto invalid;
+    }
     if(!enabled && !*config.upstream_address && !*config.upstream_host && !config.upstream_port)return 0;
     if(!enabled || !*config.upstream_address || !*config.upstream_host || !config.upstream_port)goto invalid;
     size_t n=strlen(config.proxy_prefix);
@@ -96,7 +105,7 @@ invalid:
     fprintf(stderr,"configuration: invalid/incomplete proxy settings, reserved prefix, or upstream listener loop\n");return -1;
 }
 proxy *proxy_create(const struct http_request *r,const char *headers,size_t length,int client_fd,int *error) {
-    *error=503;proxy *p=calloc(1,sizeof *p);if(!p)return NULL;p->fd=-1;
+    *error=503;proxy *p=calloc(1,sizeof *p);if(!p)return NULL;
     *error=400;
     if(http_fields_parse(&p->response.headers,headers,length)<0){*error=431;goto fail;}
     struct http_fields *f=&p->response.headers;
@@ -116,7 +125,7 @@ proxy *proxy_create(const struct http_request *r,const char *headers,size_t leng
         if(peer.ss_family==AF_INET6)ip=&((struct sockaddr_in6 *)&peer)->sin6_addr;
         if(ip && inet_ntop(peer.ss_family,ip,address,sizeof address) && append(p->request,sizeof p->request,&p->request_length,"X-Forwarded-For: %s\r\n",address)<0)goto large;
     }
-    if(append(p->request,sizeof p->request,&p->request_length,"X-Forwarded-Proto: %s\r\nVia: 1.1 c-http-server\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n",transport_tls_enabled()?"https":"http",p->body_length)<0)goto large;
+    if(append(p->request,sizeof p->request,&p->request_length,"X-Forwarded-Proto: %s\r\nVia: 1.1 c-http-server\r\nContent-Length: %zu\r\nConnection: %s\r\n\r\n",transport_tls_enabled()?"https":"http",p->body_length,config.upstream_pool_enabled?"keep-alive":"close")<0)goto large;
     *error=0;return p;
 large:*error=431;
 fail:free(p);return NULL;
@@ -131,18 +140,16 @@ static void fail(proxy *p,int code,enum proxy_failure kind) {
 }
 void proxy_start(proxy *p,const char *body,int keep_alive,int64_t now) {
     p->body=body;p->keep_alive=keep_alive;p->deadline=now+config.upstream_connect_timeout_ms;stats.requests++;
-    struct sockaddr_storage address;socklen_t size;
-    if(deployment_address(config.upstream_address,config.upstream_port,&address,&size)<0){fail(p,502,FAILURE_CONNECT);return;}
-    p->fd=socket(address.ss_family,SOCK_STREAM|SOCK_NONBLOCK|SOCK_CLOEXEC,0);
-    if(p->fd<0){fail(p,503,FAILURE_LOCAL);return;}
-    stats.active++;int flag=1;
-    if(setsockopt(p->fd,IPPROTO_TCP,TCP_NODELAY,&flag,sizeof flag)<0){fail(p,502,FAILURE_CONNECT);return;}
-    int rc=connect(p->fd,(struct sockaddr *)&address,size);
-    if(rc<0 && errno!=EINPROGRESS){fail(p,502,FAILURE_CONNECT);return;}
-    p->connecting=rc<0;
-    if(!p->connecting)p->deadline=now+config.upstream_response_timeout_ms;
+    int error;p->upstream=upstream_acquire(now,&error);
+    if(!p->upstream){fail(p,error,error==502?FAILURE_CONNECT:FAILURE_LOCAL);return;}
+    stats.active++;
 }
-static int pending_io(int error){return error==EAGAIN || error==EWOULDBLOCK || error==EINTR;}
+static void update_deadline(proxy *p) {
+    p->deadline=p->total_deadline;
+    if(!p->got_headers && (p->request_offset<p->request_length || p->body_offset<p->body_length) && p->write_deadline<p->deadline)
+        p->deadline=p->write_deadline;
+    if(p->read_active && p->read_deadline<p->deadline)p->deadline=p->read_deadline;
+}
 static int client_write(proxy *p,transport *client,const char *data,size_t size,
                         size_t *offset,uint32_t *interest,int body) {
     if(*offset==size)return 1;
@@ -242,17 +249,23 @@ int proxy_step(proxy *p,transport *client,int64_t now,uint32_t *client_interest)
     *client_interest=0;p->interest=0;p->runnable=0;
     if(p->error)return -1;
     if(now>=p->deadline){fail(p,504,FAILURE_TIMEOUT);return -1;}
-    if(p->connecting) {
-        struct sockaddr_storage peer;socklen_t size=sizeof peer;
-        if(getpeername(p->fd,(struct sockaddr *)&peer,&size)<0) {
-            int error=0;socklen_t length=sizeof error;
-            if(getsockopt(p->fd,SOL_SOCKET,SO_ERROR,&error,&length)<0 || error){fail(p,502,FAILURE_CONNECT);return -1;}
-            p->interest=EPOLLOUT;return 0;
+    if(!p->connected) {
+        int rc=upstream_ready(p->upstream,now,&p->interest);
+        if(rc<0){fail(p,502,FAILURE_CONNECT);return -1;}
+        struct upstream_state state=upstream_state(p->upstream);
+        if(state.connected_at) {
+            p->total_deadline=state.connected_at+config.upstream_response_timeout_ms;
+            p->deadline=state.connected_at+config.upstream_handshake_timeout_ms;
+            if(p->total_deadline<p->deadline)p->deadline=p->total_deadline;
         }
-        p->connecting=0;p->deadline=now+config.upstream_response_timeout_ms;
+        if(!rc)return 0;
+        p->connected=1;
+        p->write_deadline=now+config.upstream_write_timeout_ms;
+        update_deadline(p);
     }
     for(unsigned turn=0;turn<32;turn++) {
         if(p->output_offset<p->output_length || p->payload_length) {
+            p->read_active=0;update_deadline(p);
             int rc=flush_client(p,client,client_interest);
             if(rc<=0)return rc;
             continue;
@@ -262,6 +275,8 @@ int proxy_step(proxy *p,transport *client,int64_t now,uint32_t *client_interest)
                 memcpy(p->output,"0\r\n\r\n",5);
                 p->output_length=5;p->output_offset=0;p->terminal=1;continue;
             }
+            p->reusable=p->response.persistent && p->response.framing!=HTTP_EOF &&
+                !p->input_length && p->request_offset==p->request_length && p->body_offset==p->body_length;
             return 1;
         }
         if(!p->got_headers) {
@@ -275,22 +290,30 @@ int proxy_step(proxy *p,transport *client,int64_t now,uint32_t *client_interest)
         }
         /* Read responses even while request writes are pending (early errors). */
         size_t capacity=p->got_headers?sizeof p->input:HEADER_LIMIT;
-        ssize_t n=recv(p->fd,p->input+p->input_length,capacity-p->input_length,0);
-        if(n>0){p->input_length+=(size_t)n;stats.upstream_bytes+=(uint64_t)n;continue;}
+        if(!p->read_active && (p->got_headers || (p->request_offset==p->request_length && p->body_offset==p->body_length))) {
+            p->read_active=1;p->read_deadline=now+config.upstream_read_timeout_ms;
+        }
+        update_deadline(p);
+        ssize_t n=upstream_read(p->upstream,p->input+p->input_length,capacity-p->input_length,&p->interest);
+        if(n>0){p->read_deadline=now+config.upstream_read_timeout_ms;p->input_length+=(size_t)n;stats.upstream_bytes+=(uint64_t)n;continue;}
         if(!n) {
             if(p->got_headers && p->response.framing==HTTP_EOF){p->finished=1;continue;}
             fail(p,502,FAILURE_RESPONSE);return -1;
         }
-        if(!pending_io(errno)){fail(p,502,FAILURE_RESPONSE);return -1;}
-        p->interest=EPOLLIN;
-        if(!p->got_headers) {
+        if(n!=-2){fail(p,502,FAILURE_RESPONSE);return -1;}
+
+        if(!p->got_headers && upstream_state(p->upstream).pending!=UPSTREAM_READ) {
             const char *data=NULL;size_t length=0;size_t *offset=NULL;
             if(p->request_offset<p->request_length){data=p->request;length=p->request_length;offset=&p->request_offset;}
             else if(p->body_offset<p->body_length){data=p->body;length=p->body_length;offset=&p->body_offset;}
             if(data) {
-                n=send(p->fd,data+*offset,length-*offset,MSG_NOSIGNAL);
-                if(n>0){*offset+=(size_t)n;continue;}
-                if(n<0 && pending_io(errno))p->interest|=EPOLLOUT;
+                uint32_t wanted=0;
+                n=upstream_write(p->upstream,data+*offset,length-*offset,&wanted);
+                if(n>0){*offset+=(size_t)n;p->write_deadline=now+config.upstream_write_timeout_ms;continue;}
+                if(n==-2) {
+                    if(upstream_state(p->upstream).pending==UPSTREAM_WRITE)p->interest=wanted;
+                    else p->interest|=wanted;
+                }
                 else {fail(p,502,FAILURE_RESPONSE);return -1;}
             }
         }
@@ -302,7 +325,7 @@ struct proxy_progress proxy_progress(const proxy *p) {
     if(!p)return (struct proxy_progress){.fd=-1};
     int partial_header=p->output_offset>0 && p->output_offset<p->output_length;
     return (struct proxy_progress){
-        .fd=p->fd, .interest=p->interest, .deadline=p->deadline, .sent=p->sent,
+        .fd=upstream_state(p->upstream).fd, .interest=p->interest, .deadline=p->deadline, .sent=p->sent,
         .status=p->committed?p->status:p->error?p->error:p->status,
         .keep_alive=p->keep_alive, .runnable=p->runnable,
         .can_send_error=!p->committed && !p->client_retry && !partial_header
@@ -315,6 +338,7 @@ void proxy_drain(proxy *p) {
 }
 void proxy_destroy(proxy *p) {
     if(!p)return;
-    if(p->fd>=0){close(p->fd);stats.active--;}
+    if(p->upstream){struct timespec t={0};(void)clock_gettime(CLOCK_MONOTONIC,&t);
+        upstream_release(p->upstream,p->reusable && !p->error,(int64_t)t.tv_sec*1000+t.tv_nsec/1000000);stats.active--;}
     OPENSSL_cleanse(p,sizeof *p);free(p);
 }

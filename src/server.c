@@ -12,6 +12,7 @@
 #include "transport.h"
 #include "deployment.h"
 #include "proxy.h"
+#include "upstream_pool.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -118,7 +119,8 @@ int main(int argc, char **argv) {
     action.sa_handler=reload_credentials;
     if(sigaction(SIGHUP,&action,NULL)<0){perror("signal");return EXIT_FAILURE;}
     if(transport_init()<0)return EXIT_FAILURE;
-    if (logging_init() < 0) {transport_close();return EXIT_FAILURE;}
+    if(upstream_init()<0){transport_close();return EXIT_FAILURE;}
+    if (logging_init() < 0) {upstream_close();transport_close();return EXIT_FAILURE;}
     metrics_init((unsigned)limit);
     int root = -1, server = -1, epoll_fd = -1, failed = 1;
     struct connection_slot *slots = NULL;
@@ -141,6 +143,7 @@ int main(int argc, char **argv) {
     if(listen(server,256)<0){perror("listen");goto cleanup;}
     epoll_fd = epoll_create1(EPOLL_CLOEXEC);
     if (epoll_fd < 0) { perror("epoll_create1"); goto cleanup; }
+    if(upstream_pool_init(epoll_fd)<0){perror("upstream pool");goto cleanup;}
     if (file_io_init() < 0) { fprintf(stderr, "file I/O pool initialization failed\n"); goto cleanup; }
     struct epoll_event completion = {.events = EPOLLIN, .data.u64 = UINT64_MAX - 1};
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, file_io_eventfd(), &completion) < 0) {
@@ -171,14 +174,14 @@ int main(int argc, char **argv) {
             if(deployment_notify("STOPPING=1\nSTATUS=Draining active requests")<0)perror("systemd stopping notification");
             int64_t now = now_ms();
             if (now < 0) { failed = 1; break; }
-            drain_deadline = now + grace_ms;
+            drain_deadline = now + grace_ms;upstream_pool_drain(now);
             (void)epoll_ctl(epoll_fd, EPOLL_CTL_DEL, server, NULL);
             close(server); server = -1;
             for (unsigned i = 0; i < (unsigned)limit; ++i) if (slots[i].client) {
                 connection_drain(slots[i].client); advance(epoll_fd, &slots[i], i);
             }
         }
-        if (draining && (metrics_active() == 0 || atomic_load(&shutdown_requests) > 1 || now_ms() >= drain_deadline)) break;
+        if (draining && ((metrics_active() == 0 && !upstream_pool_pending()) || atomic_load(&shutdown_requests) > 1 || now_ms() >= drain_deadline)) break;
         if(atomic_exchange(&reload_requested,0))reload_pending=1;
         if(reload_pending && !credential_reload && !draining) {
             if(!*config.auth_credentials_file){auth_reload_result(NULL);reload_pending=0;}
@@ -229,6 +232,8 @@ int main(int argc, char **argv) {
                 }
             } else if (event_tag == UINT64_MAX - 1) {
                 file_io_ack();
+            } else if(event_tag & UPSTREAM_POOL_EVENT) {
+                upstream_pool_event(event_tag,now_ms());
             } else if (index < (unsigned)limit && slots[index].client) {
                 if(event_tag!=slots[index].client_tag && event_tag!=slots[index].upstream_tag)continue;
                 if(event_tag==slots[index].client_tag && (events[i].events & (EPOLLERR|EPOLLHUP)))remove_connection(epoll_fd,&slots[index]);
@@ -256,6 +261,7 @@ int main(int argc, char **argv) {
          * by timers while a batch still contains events for those slots. */
         int64_t now = now_ms();
         if (now < 0) { failed = 1; break; }
+        upstream_pool_tick(now);
         for (unsigned i = 0; i < (unsigned)limit; ++i)
             if (slots[i].client && (connection_expired(slots[i].client, now) || connection_waiting(slots[i].client) || connection_runnable(slots[i].client))) advance(epoll_fd, &slots[i], i);
     }
@@ -264,11 +270,12 @@ cleanup:
         deployment_set_ready(0);
         if(deployment_notify("STOPPING=1\nSTATUS=Stopping")<0)perror("systemd stopping notification");
     }
-    stopping = 1;
+    stopping = 1;upstream_pool_drain(now_ms());
     if (slots) {
         for (long i = 0; i < limit; ++i) if (slots[i].client) connection_destroy(slots[i].client);
         free(slots);
     }
+    upstream_pool_close();
     file_io_close();
     auth_close();
     file_cache_close(); /* Join active disk work before closing the shared root. */
@@ -276,6 +283,6 @@ cleanup:
     if (server >= 0) close(server);
     if (root >= 0) close(root);
     logging_close();
-    transport_close();
+    upstream_close();transport_close();
     return failed ? EXIT_FAILURE : EXIT_SUCCESS;
 }
