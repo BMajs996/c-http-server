@@ -9,6 +9,7 @@
 #include "deployment.h"
 #include "proxy.h"
 #include "upstream_pool.h"
+#include "upstream_health.h"
 #include <stdio.h>
 #include <time.h>
 static uint64_t accepted, rejected, active, completed, aborted, bytes_sent, timeouts, invalid;
@@ -70,6 +71,27 @@ size_t metrics_render(char *buffer, size_t capacity) {
     COUNTER("upstream_pool_discards_total",pool.discarded);
     COUNTER("upstream_pool_exhaustions_total",pool.exhaustions);
     COUNTER("upstream_pool_expirations_total",pool.expired);
+    if(config.backend_count) {
+        static const struct { const char *name,*type; } fields[]={
+            {"healthy","gauge"},{"requests_total","counter"},{"active","gauge"},
+            {"pool_total","gauge"},{"pool_idle","gauge"},{"pool_closing","gauge"},
+            {"pool_reused_total","counter"},
+            {"probe_success_total","counter"},{"probe_failure_total","counter"},{"passive_failure_total","counter"}
+        };
+        for(size_t k=0;k<sizeof fields/sizeof fields[0];k++)
+            PUT("# TYPE c_http_backend_%s %s\n",fields[k].name,fields[k].type);
+        int64_t now=now_ms();
+        for(unsigned i=0;i<config.backend_count;i++) {
+            struct upstream_pool_stats member;uint64_t requests;
+            struct upstream_health_stats health;
+            upstream_pool_backend(i,&member,&requests);
+            upstream_health_snapshot(i,now,&health);
+            uint64_t values[]={health.healthy,requests,member.leased,member.total,member.idle,member.closing,
+                member.reused,health.probe_ok,health.probe_failed,health.passive_failed};
+            for(size_t k=0;k<sizeof fields/sizeof fields[0];k++)
+                PUT("c_http_backend_%s{backend=\"%s\"} %ju\n",fields[k].name,config.backends[i].name,(uintmax_t)values[k]);
+        }
+    }
     COUNTER("proxy_requests_total",proxy.requests);
     COUNTER("upstream_connect_failures_total",proxy.connect_failures);
     COUNTER("upstream_timeouts_total",proxy.timeouts);

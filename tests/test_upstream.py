@@ -1,5 +1,6 @@
 """Persistent backend fixtures for bounded pool and upstream TLS behavior."""
 import concurrent.futures
+from contextlib import contextmanager
 import http.client
 import json
 import os
@@ -28,16 +29,19 @@ class PersistentHandler(socketserver.StreamRequestHandler):
                 body=self.rfile.read(int(headers.get('Content-Length','0')))
                 if target=='/slow': time.sleep(.5)
                 if target=='/read-stall': time.sleep(.5)
+                if target=='/invalid': self.wfile.write(b'invalid response\r\n\r\n');return
                 if target=='/chunked':
                     self.wfile.write(f'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nX-Connection: {identity}\r\n\r\n3\r\nabc\r\n0\r\n\r\n'.encode());self.wfile.flush();continue
                 if target=='/dribble':
                     self.wfile.write(b'HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\n')
                     for _ in range(20):self.wfile.write(b'x');self.wfile.flush();time.sleep(.04)
                     continue
-                payload=json.dumps({'connection':identity,'body':body.decode('latin1'),'method':method,'client_certificate':(self.request.getpeercert() or {}).get('subject',[]) if isinstance(self.request,ssl.SSLSocket) else [],'sni':getattr(self.request,'observed_sni',None),'forwarded_proto':headers.get('X-Forwarded-Proto')}).encode()
+                payload=json.dumps({'connection':identity,'host':headers.get('Host'),'body':body.decode('latin1'),'method':method,'client_certificate':(self.request.getpeercert() or {}).get('subject',[]) if isinstance(self.request,ssl.SSLSocket) else [],'sni':getattr(self.request,'observed_sni',None),'forwarded_proto':headers.get('X-Forwarded-Proto')}).encode()
                 close=target in ['/close','/eof','/truncated'] or headers.get('Connection','').lower()=='close'
                 version='HTTP/1.0' if target=='/http10' else 'HTTP/1.1'
                 status=204 if target=='/204' else 304 if target=='/304' else 200
+                if target=='/health':status=getattr(self.server,'health_status',200)
+                if target=='/error':status=500
                 length=100 if target=='/truncated' else 17 if target=='/304' else len(payload)
                 if target in ['/extra','/late-extra']: payload=b'ok';length=2
                 if target=='/large':payload=LARGE;length=len(payload)
@@ -300,5 +304,215 @@ class UpstreamTLSTests(ProxyHarness):
             started=time.monotonic();proc.send_signal(signal.SIGTERM)
             self.assertEqual(future.result()[0],200);self.assertEqual(proc.wait(timeout=3),0)
             self.assertLess(time.monotonic()-started,2)
+
+    def test_mixed_group_with_mtls(self):
+        backend=self.tls_backend(mtls=True)
+        options=lambda port,host:dict(address='127.0.0.1',port=port,host=host)
+        secure=options(backend,'secure.internal')
+        secure.update(tls=1,tls_server_name='backend.test',tls_ca_file=self.base/'server-ca.pem',
+                      tls_client_cert=self.base/'client.pem',tls_client_key=self.base/'client.key')
+        plain=PersistentBackend(('127.0.0.1',0),PersistentHandler)
+        with running_backend(plain):
+            _,port=self.launch(backends={'http':options(plain.server_address[1],'plain.internal'),
+                                        'secure':secure},upstream_pool_enabled=1)
+            results=[self.result(port) for _ in range(4)]
+            self.assertEqual([r['host'] for r in results],['plain.internal','secure.internal']*2)
+            self.assertEqual(results[0]['connection'],results[2]['connection'])
+            self.assertEqual(results[1]['connection'],results[3]['connection'])
+            self.assertEqual(results[1]['sni'],'backend.test')
+            self.assertIn('client',str(results[1]['client_certificate']))
+            deadline=time.monotonic()+3
+            while b'c_http_backend_probe_success_total{backend="secure"} 1' not in self.request('/metrics',port=port)[2]:
+                self.assertLess(time.monotonic(),deadline)
+                time.sleep(.02)
+
+@contextmanager
+def running_backend(backend):
+    thread=threading.Thread(target=backend.serve_forever,kwargs={'poll_interval':.05},daemon=True)
+    thread.start()
+    try:
+        yield backend
+    finally:
+        backend.shutdown();backend.server_close();thread.join()
+
+class BalanceTests(ProxyHarness):
+    backend_type=PersistentBackend
+    handler_type=PersistentHandler
+
+    def setUp(self):
+        self.procs=[]
+
+    def member(self,host,**settings):
+        backend=PersistentBackend(('127.0.0.1',0),PersistentHandler)
+        context=running_backend(backend)
+        context.__enter__()
+        self.addCleanup(context.__exit__,None,None,None)
+        return backend,dict(address='127.0.0.1',port=backend.server_address[1],host=host,**settings)
+
+    def group(self,backends,**settings):
+        _,self.port=self.launch(backends=backends,**{'upstream_health_enabled':0,**settings})
+
+    def data(self,path='/id'):
+        status,_,body=self.request('/proxy'+path)
+        self.assertEqual(status,200,body)
+        return json.loads(body)
+
+    def metric(self,field,name):
+        status,_,body=self.request('/metrics')
+        self.assertEqual(status,200)
+        key=f'c_http_backend_{field}{{backend="{name}"}}'
+        return next(int(v) for k,v in (line.split() for line in body.decode().splitlines()
+                                     if line.startswith(key+' ')) if k==key)
+
+    def wait_for(self,field,name,value,timeout=3):
+        deadline=time.monotonic()+timeout
+        while self.metric(field,name)!=value:
+            self.assertLess(time.monotonic(),deadline,(field,name,value))
+            time.sleep(.03)
+
+    def test_round_robin_and_smooth_weights(self):
+        _,a=self.member('a',weight=5)
+        _,b=self.member('b')
+        _,c=self.member('c')
+        group={'a':a,'b':b,'c':c}
+        self.group(group)
+        self.assertEqual([self.data()['host'] for _ in range(9)],list('abc')*3)
+        self.group(group,upstream_balance='weighted-round-robin')
+        hosts=[self.data()['host'] for _ in range(14)]
+        for i in (0,7):
+            block=hosts[i:i+7]
+            self.assertEqual(sorted(block),list('aaaaabc'))
+            self.assertNotIn('aaaaa',''.join(block))
+
+    def test_least_connections(self):
+        _,a=self.member('a')
+        _,b=self.member('b')
+        self.group({'a':a,'b':b},upstream_balance='least-connections')
+        with concurrent.futures.ThreadPoolExecutor() as work:
+            slow=work.submit(self.data,'/slow')
+            self.wait_for('active','a',1)
+            self.assertEqual([self.data()['host'] for _ in range(3)],['b']*3)
+            self.assertEqual(slow.result()['host'],'a')
+        self.assertEqual([self.data()['host'] for _ in range(4)],list('abab'))
+
+    def test_member_saturation_and_pool_isolation(self):
+        _,a=self.member('a',pool_limit=1)
+        _,b=self.member('b',pool_limit=1)
+        self.group({'a':a,'b':b},upstream_pool_enabled=1,
+                   upstream_pool_max_connections=2,upstream_pool_idle_limit=2)
+        with concurrent.futures.ThreadPoolExecutor() as work:
+            first=work.submit(self.data,'/slow')
+            self.wait_for('active','a',1)
+            second=work.submit(self.data,'/slow')
+            self.wait_for('active','b',1)
+            self.assertEqual(self.request('/proxy/id')[0],503)
+            self.assertEqual(first.result()['host'],'a')
+            self.assertEqual(second.result()['host'],'b')
+        results=[self.data() for _ in range(6)]
+        self.assertEqual([r['host'] for r in results],list('ab')*3)
+        self.assertEqual({r['connection'] for r in results},{1})
+
+    def test_admission_skips_full_member(self):
+        _,a=self.member('a',pool_limit=1,weight=1000)
+        _,b=self.member('b')
+        self.group({'a':a,'b':b},upstream_balance='weighted-round-robin',
+                   upstream_pool_enabled=1)
+        with concurrent.futures.ThreadPoolExecutor() as work:
+            first=work.submit(self.data,'/slow')
+            self.wait_for('active','a',1)
+            self.assertEqual(self.data()['host'],'b')
+            self.assertEqual(first.result()['host'],'a')
+
+    def test_failed_connection_does_not_try_another_member(self):
+        _,b=self.member('b')
+        with socket.socket() as refused:
+            refused.bind(('127.0.0.1',0))
+            a=dict(address='127.0.0.1',port=refused.getsockname()[1],host='a')
+            self.group({'a':a,'b':b})
+            self.assertEqual(self.request('/proxy/id')[0],502)
+            self.assertEqual(self.metric('requests_total','b'),0)
+            self.assertEqual(self.data()['host'],'b')
+
+    def test_reclaim_other_members_idle_connection(self):
+        _,a=self.member('a')
+        _,b=self.member('b')
+        self.group({'a':a,'b':b},upstream_pool_enabled=1,
+                   upstream_pool_max_connections=1,upstream_pool_idle_limit=1)
+        self.assertEqual([self.data()['host'] for _ in range(4)],list('abab'))
+        self.assertEqual(self.metric('pool_idle','a'),0)
+        self.assertEqual(self.metric('pool_idle','b'),1)
+
+    def test_passive_quarantine_and_cooldown(self):
+        _,a=self.member('a')
+        self.group({'a':a})
+        self.assertEqual(self.request('/proxy/error')[0],500)
+        self.assertEqual(self.metric('passive_failure_total','a'),0)
+        for _ in range(2):
+            self.assertEqual(self.request('/proxy/invalid')[0],502)
+        self.assertEqual(self.metric('passive_failure_total','a'),2)
+        self.assertEqual(self.request('/proxy/id')[0],503)
+        self.assertEqual(self.request('/ready')[0],200)
+        self.wait_for('healthy','a',1,timeout=12)
+        self.assertEqual(self.data()['host'],'a')
+
+    def test_active_quarantine_and_recovery(self):
+        backend,a=self.member('a')
+        backend.health_status=503
+        self.group({'a':a},upstream_health_enabled=1,upstream_pool_enabled=1)
+        self.wait_for('probe_failure_total','a',1)
+        self.assertEqual(self.data()['host'],'a')
+        self.wait_for('healthy','a',0,timeout=7)
+        self.assertEqual(self.request('/proxy/id')[0],503)
+        self.assertEqual(self.metric('pool_idle','a'),0)
+        backend.health_status=200
+        self.wait_for('probe_success_total','a',1,timeout=7)
+        self.assertEqual(self.request('/proxy/id')[0],503)
+        self.wait_for('healthy','a',1,timeout=7)
+        self.assertEqual(self.data()['host'],'a')
+
+    def test_active_probe_budget_and_custom_path(self):
+        release=threading.Event()
+        four_started=threading.Event()
+        paths=[]
+        lock=threading.Lock()
+
+        class ProbeHandler(socketserver.StreamRequestHandler):
+            def handle(self):
+                line=self.rfile.readline(8193)
+                http.client.parse_headers(self.rfile)
+                with lock:
+                    paths.append(line)
+                    if len(paths)==4:
+                        four_started.set()
+                if release.wait(timeout=1.5):
+                    self.wfile.write(b'HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n')
+
+        with running_backend(Backend(('127.0.0.1',0),ProbeHandler)) as backend:
+            member=dict(address='127.0.0.1',port=backend.server_address[1],host='api')
+            self.group({f'api-{i}':member for i in range(6)},upstream_health_enabled=1,
+                       upstream_health_path='/check')
+            try:
+                self.assertTrue(four_started.wait(timeout=1))
+                self.assertEqual(self.request('/ready')[0],200)
+                with lock:
+                    self.assertEqual(paths,[b'GET /check HTTP/1.1\r\n']*4)
+            finally:
+                release.set()
+            for i in range(6):
+                self.wait_for('probe_success_total',f'api-{i}',1)
+
+    def test_group_config_and_max_members_metrics(self):
+        _,a=self.member('a')
+        self.group({f'backend-{i:02}-abcdefghijklmnopqrstuvwxyz'[:31]:a for i in range(16)})
+        self.assertEqual(self.metric('requests_total','backend-15-abcdefghijklmnopqrstuvwxyz'[:31]),0)
+        valid='proxy_prefix=/proxy/\nupstream_group=api\n[backend a]\naddress=127.0.0.1\nport=9000\nhost=a\n'
+        cases=[valid,valid.replace('[backend a]','upstream_port=9000\n[backend a]'),
+               valid+'weight=0\n',valid+'[backend a]\n',valid.replace('host=a','host=bad host'),
+               valid.replace('upstream_group=api','upstream_group=api\nupstream_health_path=/invalid path')]
+        path=self.base/'balance-check.conf'
+        for i,content in enumerate(cases):
+            path.write_text(content)
+            result=subprocess.run([str(PROJECT/'http_server'),'--check-config',str(path)],capture_output=True)
+            self.assertEqual(result.returncode==0,i==0,result.stderr)
 
 if __name__=='__main__':unittest.main(verbosity=2)

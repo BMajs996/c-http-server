@@ -38,12 +38,12 @@ ssize_t transport_write(transport *t,const void *data,size_t length,uint32_t *in
 }
 static proxy *transaction(const char *response,int *backend) {
     config_defaults();strcpy(config.proxy_prefix,"/proxy/");
-    strcpy(config.upstream_address,"127.0.0.1");strcpy(config.upstream_host,"a");
+    strcpy(config.backends[0].address,"127.0.0.1");strcpy(config.backends[0].host,"a");
     int listener=socket(AF_INET,SOCK_STREAM,0);assert(listener>=0);
     struct sockaddr_in address={.sin_family=AF_INET,.sin_addr.s_addr=htonl(INADDR_LOOPBACK)};
     assert(!bind(listener,(struct sockaddr *)&address,sizeof address));assert(!listen(listener,1));
     socklen_t size=sizeof address;assert(!getsockname(listener,(struct sockaddr *)&address,&size));
-    config.upstream_port=ntohs(address.sin_port);
+    config.backends[0].port=ntohs(address.sin_port);config.backend_count=1;
     struct http_request request={.http11=1};strcpy(request.method,"GET");strcpy(request.target,"/proxy/x");
     const char *headers="GET /proxy/x HTTP/1.1\r\nHost: a\r\n\r\n";int error;
     proxy *p=proxy_create(&request,headers,strlen(headers),-1,&error);assert(p && !error);

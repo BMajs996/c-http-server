@@ -104,11 +104,18 @@ class ProxyHarness(unittest.TestCase):
             self.assertNotIn(b'ERROR: AddressSanitizer',err)
             self.assertNotIn(b'runtime error:',err)
 
-    def launch(self, **options):
+    def launch(self, *, backends=None, **options):
         with socket.socket() as probe: probe.bind(('127.0.0.1',0));port=probe.getsockname()[1]
         settings={'port':port,'document_root':str(PROJECT/'public'),'access_log':'0','proxy_prefix':'/proxy/','upstream_address':'127.0.0.1','upstream_port':self.backend_port,'upstream_host':'backend.test:9000','upstream_response_timeout_ms':3000}
         settings.update(options)
-        path=self.base/f'{port}.conf';path.write_text(''.join(f'{k}={v}\n' for k,v in settings.items()))
+        if backends is not None:
+            for key in ('upstream_address','upstream_port','upstream_host'):
+                settings.pop(key)
+            settings.setdefault('upstream_group','test')
+        text=''.join(f'{k}={v}\n' for k,v in settings.items())
+        for name,member in (backends or {}).items():
+            text+=f'\n[backend {name}]\n'+''.join(f'{k}={v}\n' for k,v in member.items())
+        path=self.base/f'{port}.conf';path.write_text(text)
         env={k:v for k,v in os.environ.items() if k not in ['NOTIFY_SOCKET','C_HTTP_ACCESS_LOG']}
         proc=subprocess.Popen([str(PROJECT/'http_server'),'--config',str(path)],stdout=subprocess.PIPE,stderr=subprocess.PIPE,env=env)
         self.procs.append(proc)

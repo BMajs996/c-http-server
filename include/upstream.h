@@ -7,7 +7,7 @@ typedef struct upstream upstream;
 int upstream_init(void);
 void upstream_close(void);
 /* One reactor owns a connection. I/O: bytes, 0 EOF, -1 error, -2 retry. */
-upstream *upstream_open(int64_t now,int *error);
+upstream *upstream_open(unsigned index,int64_t now,int *error);
 /* Ready/shutdown: 1 complete, 0 pending, -1 failed; clean: 1 safe, 0 discard. */
 int upstream_ready(upstream *u,int64_t now,uint32_t *interest);
 ssize_t upstream_read(upstream *u,void *data,size_t size,uint32_t *interest);

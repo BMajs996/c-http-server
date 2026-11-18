@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 #include "proxy.h"
 #include "upstream_pool.h"
+#include "upstream_health.h"
 #include "config.h"
 #include "deployment.h"
 #include "http_response.h"
@@ -18,10 +19,11 @@
 #define WIRE_LIMIT (HEADER_LIMIT+2048)
 struct proxy {
     upstream *upstream;
+    unsigned backend;
     int reusable,connected,head,http11,keep_alive,status,error,committed,finished,runnable,client_retry;
     uint32_t interest;
     int64_t deadline,total_deadline,write_deadline,read_deadline;
-    int read_active;
+    int read_active, downstream_wait, backend_result;
     char request[WIRE_LIMIT];size_t request_length,request_offset,body_length,body_offset;
     const char *body;
     char input[32768];size_t input_length,header_scan;
@@ -57,18 +59,53 @@ enum proxy_route_kind proxy_route(const char *target) {
     if(path>=n && !memcmp(target,config.proxy_prefix,n))return PROXY_FORWARD;
     return path==n-1 && !memcmp(target,config.proxy_prefix,n-1)?PROXY_REDIRECT:PROXY_LOCAL;
 }
+static int backend_valid(const struct backend_config *b) {
+    int tls_files=*b->tls_server_name || *b->tls_ca_file || *b->tls_client_cert || *b->tls_client_key;
+    if((b->tls && (!*b->tls_server_name || !*b->tls_ca_file)) ||
+       (!b->tls && tls_files) || (!!*b->tls_client_cert!=!!*b->tls_client_key))return 0;
+    if(b->tls) {
+        const unsigned char *name=(unsigned char *)b->tls_server_name;
+        for(;*name;name++)if(!((*name>='a'&&*name<='z')||(*name>='A'&&*name<='Z')||(*name>='0'&&*name<='9')||strchr(".-:",*name)))return 0;
+    }
+    if(!*b->address || !*b->host || !b->port)return 0;
+    struct sockaddr_storage upstream,local;socklen_t ul,ll;
+    if(deployment_address(b->address,b->port,&upstream,&ul)<0 || deployment_address(config.bind_address,config.port,&local,&ll)<0)return 0;
+    uint32_t ip=0,own=0;int upstream_v4=0,local_v4=0;
+    if(upstream.ss_family==AF_INET){ip=((struct sockaddr_in *)&upstream)->sin_addr.s_addr;upstream_v4=1;}
+    else {
+        struct in6_addr *address=&((struct sockaddr_in6 *)&upstream)->sin6_addr;
+        if(IN6_IS_ADDR_UNSPECIFIED(address) || IN6_IS_ADDR_MULTICAST(address))return 0;
+        if(IN6_IS_ADDR_V4MAPPED(address)){memcpy(&ip,address->s6_addr+12,sizeof ip);upstream_v4=1;}
+    }
+    if(local.ss_family==AF_INET){own=((struct sockaddr_in *)&local)->sin_addr.s_addr;local_v4=1;}
+    if(upstream_v4) {
+        uint32_t host_ip=ntohl(ip);
+        if(!host_ip || (host_ip>>28)==14)return 0;
+        if(local_v4 && config.port==b->port && (!own || own==ip || ((ntohl(own)>>24)==127 && (host_ip>>24)==127)))return 0;
+    } else if(local.ss_family==AF_INET6 && config.port==b->port) {
+        struct in6_addr *address=&((struct sockaddr_in6 *)&upstream)->sin6_addr;
+        struct in6_addr *listener=&((struct sockaddr_in6 *)&local)->sin6_addr;
+        if(IN6_IS_ADDR_UNSPECIFIED(listener) || !memcmp(address,listener,sizeof *address))return 0;
+    }
+    for(const unsigned char *p=(unsigned char *)b->host;*p;p++)if(*p<=32 || *p>=127)return 0;
+    char test[512];struct http_request r;
+    int len=snprintf(test,sizeof test,"GET / HTTP/1.1\r\nHost: %s\r\n\r\n",b->host);
+    if(len<0 || (size_t)len>=sizeof test || parse_request(test,(size_t)len,&r))return 0;
+    return 1;
+}
 int proxy_config_validate(void) {
     int enabled=*config.proxy_prefix!=0;
-    if(config.upstream_pool_idle_limit>config.upstream_pool_max_connections || (config.upstream_pool_enabled && !enabled))goto invalid;
-    int tls_files=*config.upstream_tls_server_name || *config.upstream_tls_ca_file || *config.upstream_tls_client_cert || *config.upstream_tls_client_key;
-    if((config.upstream_tls && (!enabled || !*config.upstream_tls_server_name || !*config.upstream_tls_ca_file)) ||
-       (!config.upstream_tls && tls_files) || (!!*config.upstream_tls_client_cert!=!!*config.upstream_tls_client_key))goto invalid;
-    if(config.upstream_tls) {
-        const unsigned char *name=(unsigned char *)config.upstream_tls_server_name;
-        for(;*name;name++)if(!((*name>='a'&&*name<='z')||(*name>='A'&&*name<='Z')||(*name>='0'&&*name<='9')||strchr(".-:",*name)))goto invalid;
+    if(config.upstream_pool_idle_limit>config.upstream_pool_max_connections ||
+       ((config.upstream_pool_enabled || config.upstream_health_enabled) && !enabled))goto invalid;
+    struct backend_config *first=&config.backends[0];
+    if(!enabled) {
+        if(config.backend_count || *first->address || *first->host || first->port || first->tls ||
+           *first->tls_server_name || *first->tls_ca_file || *first->tls_client_cert || *first->tls_client_key)goto invalid;
+        return 0;
     }
-    if(!enabled && !*config.upstream_address && !*config.upstream_host && !config.upstream_port)return 0;
-    if(!enabled || !*config.upstream_address || !*config.upstream_host || !config.upstream_port)goto invalid;
+    if(!config.backend_count) {
+        strcpy(first->name,"default");first->weight=1;config.backend_count=1;
+    }
     size_t n=strlen(config.proxy_prefix);
     if(n<2 || config.proxy_prefix[0]!='/' || config.proxy_prefix[n-1]!='/' || strstr(config.proxy_prefix,"..") || strstr(config.proxy_prefix,"//"))goto invalid;
     for(size_t i=0;i<n;i++) {
@@ -77,29 +114,10 @@ int proxy_config_validate(void) {
     }
     const char *reserved[]={"/api/","/health/","/ready/","/metrics/"};
     for(size_t i=0;i<4;i++)if(!strncmp(config.proxy_prefix,reserved[i],strlen(reserved[i])))goto invalid;
-    struct sockaddr_storage upstream,local;socklen_t ul,ll;
-    if(deployment_address(config.upstream_address,config.upstream_port,&upstream,&ul)<0 || deployment_address(config.bind_address,config.port,&local,&ll)<0)goto invalid;
-    uint32_t ip=0,own=0;int upstream_v4=0,local_v4=0;
-    if(upstream.ss_family==AF_INET){ip=((struct sockaddr_in *)&upstream)->sin_addr.s_addr;upstream_v4=1;}
-    else {
-        struct in6_addr *address=&((struct sockaddr_in6 *)&upstream)->sin6_addr;
-        if(IN6_IS_ADDR_UNSPECIFIED(address) || IN6_IS_ADDR_MULTICAST(address))goto invalid;
-        if(IN6_IS_ADDR_V4MAPPED(address)){memcpy(&ip,address->s6_addr+12,sizeof ip);upstream_v4=1;}
-    }
-    if(local.ss_family==AF_INET){own=((struct sockaddr_in *)&local)->sin_addr.s_addr;local_v4=1;}
-    if(upstream_v4) {
-        uint32_t host_ip=ntohl(ip);
-        if(!host_ip || (host_ip>>28)==14)goto invalid;
-        if(local_v4 && config.port==config.upstream_port && (!own || own==ip || ((ntohl(own)>>24)==127 && (host_ip>>24)==127)))goto invalid;
-    } else if(local.ss_family==AF_INET6 && config.port==config.upstream_port) {
-        struct in6_addr *address=&((struct sockaddr_in6 *)&upstream)->sin6_addr;
-        struct in6_addr *listener=&((struct sockaddr_in6 *)&local)->sin6_addr;
-        if(IN6_IS_ADDR_UNSPECIFIED(listener) || !memcmp(address,listener,sizeof *address))goto invalid;
-    }
-    for(const unsigned char *p=(unsigned char *)config.upstream_host;*p;p++)if(*p<=32 || *p>=127)goto invalid;
-    char test[512];struct http_request r;
-    int len=snprintf(test,sizeof test,"GET / HTTP/1.1\r\nHost: %s\r\n\r\n",config.upstream_host);
-    if(len<0 || (size_t)len>=sizeof test || parse_request(test,(size_t)len,&r))goto invalid;
+    for(unsigned i=0;i<config.backend_count;i++)if(!backend_valid(&config.backends[i]))goto invalid;
+    const unsigned char *path=(const unsigned char *)config.upstream_health_path;
+    if(*path!='/')goto invalid;
+    for(;*path;path++)if(*path<=32 || *path>=127 || *path=='#')goto invalid;
     return 0;
 invalid:
     fprintf(stderr,"configuration: invalid/incomplete proxy settings, reserved prefix, or upstream listener loop\n");return -1;
@@ -113,7 +131,7 @@ proxy *proxy_create(const struct http_request *r,const char *headers,size_t leng
     for(size_t i=0;i<f->count;i++)if(!strcasecmp(http_field_name(f,i),"Upgrade")){*error=501;goto fail;}
     p->head=r->head;p->http11=r->http11;p->body_length=r->content_length;
     const char *target=r->target+strlen(config.proxy_prefix)-1;
-    if(append(p->request,sizeof p->request,&p->request_length,"%s %s HTTP/1.1\r\nHost: %s\r\n",r->method,target,config.upstream_host)<0)goto large;
+    if(append(p->request,sizeof p->request,&p->request_length,"%s %s HTTP/1.1\r\n",r->method,target)<0)goto large;
     for(size_t i=0;i<f->count;i++) {
         const char *name=http_field_name(f,i),*value=http_field_value(f,i);
         if(http_field_hop(f,i) || !strcasecmp(name,"Host") || !strcasecmp(name,"Content-Length") || !strcasecmp(name,"Forwarded") || !strncasecmp(name,"X-Forwarded-",12))continue;
@@ -125,7 +143,8 @@ proxy *proxy_create(const struct http_request *r,const char *headers,size_t leng
         if(peer.ss_family==AF_INET6)ip=&((struct sockaddr_in6 *)&peer)->sin6_addr;
         if(ip && inet_ntop(peer.ss_family,ip,address,sizeof address) && append(p->request,sizeof p->request,&p->request_length,"X-Forwarded-For: %s\r\n",address)<0)goto large;
     }
-    if(append(p->request,sizeof p->request,&p->request_length,"X-Forwarded-Proto: %s\r\nVia: 1.1 c-http-server\r\nContent-Length: %zu\r\nConnection: %s\r\n\r\n",transport_tls_enabled()?"https":"http",p->body_length,config.upstream_pool_enabled?"keep-alive":"close")<0)goto large;
+    if(append(p->request,sizeof p->request,&p->request_length,"X-Forwarded-Proto: %s\r\nVia: 1.1 c-http-server\r\nContent-Length: %zu\r\nConnection: %s\r\n",transport_tls_enabled()?"https":"http",p->body_length,config.upstream_pool_enabled?"keep-alive":"close")<0)goto large;
+    if(sizeof p->request-p->request_length < sizeof config.backends[0].host+10)goto large;
     *error=0;return p;
 large:*error=431;
 fail:free(p);return NULL;
@@ -134,15 +153,18 @@ enum proxy_failure { FAILURE_LOCAL, FAILURE_CONNECT, FAILURE_TIMEOUT, FAILURE_RE
 static void fail(proxy *p,int code,enum proxy_failure kind) {
     if(p->error)return;
     p->error=code;
+    if(kind==FAILURE_CONNECT || kind==FAILURE_RESPONSE) p->backend_result=-1;
     if(kind==FAILURE_CONNECT)stats.connect_failures++;
     if(kind==FAILURE_TIMEOUT)stats.timeouts++;
     if(kind==FAILURE_RESPONSE)stats.invalid_responses++;
 }
 void proxy_start(proxy *p,const char *body,int keep_alive,int64_t now) {
     p->body=body;p->keep_alive=keep_alive;p->deadline=now+config.upstream_connect_timeout_ms;stats.requests++;
-    int error;p->upstream=upstream_acquire(now,&error);
+    int error;p->upstream=upstream_acquire(now,&p->backend,&error);
     if(!p->upstream){fail(p,error,error==502?FAILURE_CONNECT:FAILURE_LOCAL);return;}
     stats.active++;
+    if(append(p->request,sizeof p->request,&p->request_length,"Host: %s\r\n\r\n",config.backends[p->backend].host)<0)
+        fail(p,431,FAILURE_LOCAL);
 }
 static void update_deadline(proxy *p) {
     p->deadline=p->total_deadline;
@@ -164,7 +186,7 @@ static int client_write(proxy *p,transport *client,const char *data,size_t size,
         p->runnable=*offset<size;
         return *offset==size;
     }
-    if(n==-2){p->runnable=!*interest;return 0;}
+    if(n==-2){p->downstream_wait=1;p->runnable=!*interest;return 0;}
     fail(p,502,FAILURE_LOCAL);return -1;
 }
 /* Every queued segment shares the same partial-write and TLS retry rules. */
@@ -248,7 +270,10 @@ static int decode_payload(proxy *p) {
 int proxy_step(proxy *p,transport *client,int64_t now,uint32_t *client_interest) {
     *client_interest=0;p->interest=0;p->runnable=0;
     if(p->error)return -1;
-    if(now>=p->deadline){fail(p,504,FAILURE_TIMEOUT);return -1;}
+    if(now>=p->deadline) {
+        if(!p->connected || p->deadline<p->total_deadline || !p->downstream_wait)p->backend_result=-1;
+        fail(p,504,FAILURE_TIMEOUT);return -1;
+    }
     if(!p->connected) {
         int rc=upstream_ready(p->upstream,now,&p->interest);
         if(rc<0){fail(p,502,FAILURE_CONNECT);return -1;}
@@ -275,6 +300,7 @@ int proxy_step(proxy *p,transport *client,int64_t now,uint32_t *client_interest)
                 memcpy(p->output,"0\r\n\r\n",5);
                 p->output_length=5;p->output_offset=0;p->terminal=1;continue;
             }
+            p->backend_result=1;
             p->reusable=p->response.persistent && p->response.framing!=HTTP_EOF &&
                 !p->input_length && p->request_offset==p->request_length && p->body_offset==p->body_length;
             return 1;
@@ -338,7 +364,11 @@ void proxy_drain(proxy *p) {
 }
 void proxy_destroy(proxy *p) {
     if(!p)return;
-    if(p->upstream){struct timespec t={0};(void)clock_gettime(CLOCK_MONOTONIC,&t);
-        upstream_release(p->upstream,p->reusable && !p->error,(int64_t)t.tv_sec*1000+t.tv_nsec/1000000);stats.active--;}
+    if(p->upstream || p->backend_result) {
+        struct timespec t={0};(void)clock_gettime(CLOCK_MONOTONIC,&t);
+        int64_t now=(int64_t)t.tv_sec*1000+t.tv_nsec/1000000;
+        if(p->backend_result)upstream_health_result(p->backend,p->backend_result>0,now);
+        if(p->upstream){upstream_release(p->backend,p->upstream,p->reusable && !p->error,now);stats.active--;}
+    }
     OPENSSL_cleanse(p,sizeof *p);free(p);
 }

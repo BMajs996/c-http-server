@@ -13,6 +13,7 @@
 #include "deployment.h"
 #include "proxy.h"
 #include "upstream_pool.h"
+#include "upstream_health.h"
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -168,13 +169,14 @@ int main(int argc, char **argv) {
     int draining = 0;
     int64_t drain_deadline = 0;
     io_job *credential_reload=NULL;int reload_pending=0;
+    upstream_health_tick(epoll_fd,now_ms());
     while (!stopping) {
         if (atomic_load(&shutdown_requests) && !draining) {
             draining = 1; metrics_draining();deployment_set_ready(0);
             if(deployment_notify("STOPPING=1\nSTATUS=Draining active requests")<0)perror("systemd stopping notification");
             int64_t now = now_ms();
             if (now < 0) { failed = 1; break; }
-            drain_deadline = now + grace_ms;upstream_pool_drain(now);
+            drain_deadline = now + grace_ms;upstream_health_stop();upstream_pool_drain(now);
             (void)epoll_ctl(epoll_fd, EPOLL_CTL_DEL, server, NULL);
             close(server); server = -1;
             for (unsigned i = 0; i < (unsigned)limit; ++i) if (slots[i].client) {
@@ -234,6 +236,8 @@ int main(int argc, char **argv) {
                 file_io_ack();
             } else if(event_tag & UPSTREAM_POOL_EVENT) {
                 upstream_pool_event(event_tag,now_ms());
+            } else if(event_tag & UPSTREAM_HEALTH_EVENT) {
+                upstream_health_event(epoll_fd,event_tag,now_ms());
             } else if (index < (unsigned)limit && slots[index].client) {
                 if(event_tag!=slots[index].client_tag && event_tag!=slots[index].upstream_tag)continue;
                 if(event_tag==slots[index].client_tag && (events[i].events & (EPOLLERR|EPOLLHUP)))remove_connection(epoll_fd,&slots[index]);
@@ -262,6 +266,7 @@ int main(int argc, char **argv) {
         int64_t now = now_ms();
         if (now < 0) { failed = 1; break; }
         upstream_pool_tick(now);
+        if(!draining)upstream_health_tick(epoll_fd,now);
         for (unsigned i = 0; i < (unsigned)limit; ++i)
             if (slots[i].client && (connection_expired(slots[i].client, now) || connection_waiting(slots[i].client) || connection_runnable(slots[i].client))) advance(epoll_fd, &slots[i], i);
     }
@@ -270,7 +275,7 @@ cleanup:
         deployment_set_ready(0);
         if(deployment_notify("STOPPING=1\nSTATUS=Stopping")<0)perror("systemd stopping notification");
     }
-    stopping = 1;upstream_pool_drain(now_ms());
+    stopping = 1;upstream_health_stop();upstream_pool_drain(now_ms());
     if (slots) {
         for (long i = 0; i < limit; ++i) if (slots[i].client) connection_destroy(slots[i].client);
         free(slots);

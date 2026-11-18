@@ -58,7 +58,7 @@ struct connection {
     int open_ready;
     off_t file_offset;
     int draining, timed_out;
-    char metrics_body[8192];
+    char *metrics_body;
     file_cache_entry *cached;
     int sendfile_disabled;
     transport *socket_transport;
@@ -183,7 +183,13 @@ static void prepare(connection *c) {
         char *query = strchr(c->request.target, '?');
         if (query) *query = 0;
         route_response response;
-        if(route_dispatch(&c->request,c->request_body?c->request_body:"",c->metrics_body,sizeof c->metrics_body,&response)) {
+        size_t capacity=0;
+        if(!strcmp(c->request.target,"/metrics")) {
+            capacity=8192+1536*config.backend_count;
+            c->metrics_body=malloc(capacity);
+            if(!c->metrics_body)capacity=0;
+        }
+        if(route_dispatch(&c->request,c->request_body?c->request_body:"",c->metrics_body,capacity,&response)) {
             c->status=response.status;c->body=response.body;c->body_length=response.length;
             c->type=response.type;c->allow=response.allow;
         } else {
@@ -325,6 +331,7 @@ static void complete(connection *c) {
     c->logged = 1;
     file_cache_release(c->cached);c->cached=NULL;
     if (c->file_fd >= 0) { close(c->file_fd); c->file_fd = -1; }
+    free(c->metrics_body);c->metrics_body=NULL;
     free(c->request_body);c->request_body=NULL;c->body_used=0;c->allow=NULL;
     ++c->completed;
     if (!c->keep_alive) { c->state = transport_tls_enabled()?TLS_SHUTDOWN:CLOSING; return; }
@@ -439,6 +446,7 @@ void connection_destroy(connection *c) {
     if (c->job) c->job->owner = NULL; /* Orphan result is released by reactor. */
     proxy_destroy(c->upstream);
     free(c->request_body);
+    free(c->metrics_body);
     free(c->opened.data);
     file_cache_release(c->cached);
     if (c->opened.fd >= 0) close(c->opened.fd);

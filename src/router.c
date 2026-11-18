@@ -24,7 +24,7 @@ static int ready_handler(const struct http_request *r,const char *body,char *buf
 }
 static int metrics_handler(const struct http_request *r,const char *body,char *buffer,size_t capacity,route_response *out) {
     (void)r;(void)body;
-    out->length=metrics_render(buffer,capacity);out->body=out->length?buffer:NULL;
+    out->length=buffer?metrics_render(buffer,capacity):0;out->body=out->length?buffer:NULL;
     out->type="text/plain; version=0.0.4; charset=utf-8";
     return out->length?200:500;
 }
