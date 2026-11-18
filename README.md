@@ -146,7 +146,7 @@ publishable content under the document root. These checks do not protect secrets
 copied or hard-linked into that directory. Publish updates with atomic rename;
 in-place modification can change an ongoing uncached transfer.
 
-## Single-backend reverse proxy
+## Reverse proxy
 
 Start a local backend in one terminal:
 
@@ -183,7 +183,7 @@ handlers. Use an application backend to try POST, PUT, PATCH, or DELETE.
 | upstream_read_timeout_ms | 5000 | Response read inactivity; 1–300000 ms |
 | upstream_response_timeout_ms | 30000 | Total post-TCP budget, including TLS handshake and downstream backpressure; 1–300000 ms |
 
-Supply prefix, address, port, and Host together. No proxy settings means the
+For a single backend, supply prefix, address, port, and Host together. No proxy settings means the
 existing local behavior. Prefixes use ASCII letters, digits, `/`, `-`, `_`, and
 `.`; root, duplicate slashes, `..`, and reserved first segments (`api`, `health`,
 `ready`, `metrics`) are rejected. Startup and `--check-config` validate these
@@ -256,6 +256,77 @@ upstream_connect_failures_total, upstream_timeouts_total,
 upstream_invalid_responses_total, upstream_bytes_received_total (HTTP bytes,
 including headers, excluding TLS overhead), and proxy_body_bytes_sent_total (payload only), all with
 the `c_http_` prefix. Backend health does not change lifecycle readiness.
+
+### Backend groups and load balancing
+
+Run two local C backends in separate terminals using `./http_server 9001 public`
+and `./http_server 9002 public`. Start the proxy with
+[server-balanced.conf](server-balanced.conf).
+
+```sh
+./http_server --check-config server-balanced.conf
+./http_server --config server-balanced.conf
+```
+
+From another terminal, send a proxied request and inspect assignments.
+
+```sh
+curl --fail http://127.0.0.1:8080/proxy/api/status
+curl -s http://127.0.0.1:8080/metrics | grep c_http_backend_
+```
+
+Set `upstream_group` before the first `[backend NAME]` section. Put all shared
+settings above these sections. Group and member names contain 1–31 ASCII
+letters, digits, underscores, or hyphens. Each group has up to 16 members.
+Set each member's `address`, `port`, and `host`. The remaining keys are optional.
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `weight` | 1 | 1–1000, used by smooth weighted round-robin |
+| `pool_limit` | Group limit | 1–16384, upper bound on this member's leased, idle and closing sockets |
+| `tls` | 0 | Enable verified HTTPS for this backend |
+| `tls_server_name`, `tls_ca_file` | empty | TLS peer identity and trusted CA for this member |
+| `tls_client_cert`, `tls_client_key` | empty | Optional mTLS credentials for this member |
+
+`upstream_balance` accepts `round-robin` (default), `weighted-round-robin`,
+or `least-connections`. Weighted cycles restart when the eligible set changes.
+Least-connections counts active proxy leases and rotates among ties. A group
+can have both HTTP and HTTPS backends. Legacy flat endpoint settings still
+configure a single member named `default`. Mixing the two formats is invalid.
+The proxy prefix targets one group.
+
+Each member has its own idle connections. The existing total and idle limits
+apply across the group, with an optional additional total limit per member.
+When needed, the proxy can reclaim the oldest idle connection from another
+member. TLS closes still occupy a slot until completion. An alternate member
+can be chosen during admission. Once the proxy attempts to open a connection
+or acquires a usable idle connection, it pins the request to that member. If
+no member can accept the request, the proxy returns `503`.
+
+Grouped configurations default to active probing. Set `upstream_health_enabled`
+to `0` to disable active probes, or change `upstream_health_path` from
+`/health` to another origin path. Members start available. Probes start at
+startup and run about every five seconds per member, subject to four concurrent
+probes across the group and one per member. They use separate connections and
+the member's Host and TLS settings. Each has two seconds to receive valid
+final response headers with a `2xx` status.
+
+Two consecutive failed probes or two consecutive passive backend failures
+remove a member from rotation. The counters track these two streaks separately.
+Passive failures include backend connection, TLS, timeout, I/O, and framing
+failures attributable to the backend. An HTTP error status is an ordinary proxy
+response. Quarantine closes idle connections and lets existing leases finish.
+Two consecutive good probes restore eligibility. With probes disabled, grouped
+members become eligible after a ten-second cooldown. Flat configurations
+enable health tracking by explicitly setting `upstream_health_enabled = 1`.
+`/ready` continues to indicate process readiness.
+
+The `c_http_backend_*` metrics label request assignments, active requests,
+pool state and health outcomes with the member's configured name. Existing
+aggregate metrics remain available. Backend membership, policy and TLS
+settings load at startup.
+See the [phase 10 benchmark](results/phase10-20261118/REPORT.md) for measured
+assignment counts, throughput and latency.
 
 ### Backend connection pooling
 

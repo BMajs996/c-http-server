@@ -15,7 +15,7 @@ void config_defaults(void) {
         .upstream_pool_max_age_ms=300000,.upstream_pool_max_requests=1000,
         .upstream_handshake_timeout_ms=3000,.upstream_read_timeout_ms=5000,.upstream_write_timeout_ms=5000,
         .upstream_connect_timeout_ms=2000,.upstream_response_timeout_ms=30000,
-        .cache_max_file_bytes=65536,.cache_entries=256,.cache_ttl_ms=1000};
+        .upstream_health_path="/health",.cache_max_file_bytes=65536,.cache_entries=256,.cache_ttl_ms=1000};
     strcpy(config.bind_address,"127.0.0.1");
     strcpy(config.document_root,"public");strcpy(config.access_log,"-");
 }
@@ -25,8 +25,44 @@ static char *trim(char *value) {
     while(end>value && (end[-1]==' ' || end[-1]=='\t' || end[-1]=='\r' || end[-1]=='\n')) *--end=0;
     return value;
 }
+static int identifier(const char *value) {
+    return *value && strlen(value)<32 &&
+        strspn(value,"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")==strlen(value);
+}
+static int read_number(const char *value,unsigned long long *number) {
+    if(*value<'0' || *value>'9')return -1;
+    errno=0;char *end;
+    *number=strtoull(value,&end,10);
+    return errno || *end ? -1 : 0;
+}
+/* Both configuration formats share endpoint field validation. */
+static int backend_option(struct backend_config *b,const char *key,const char *value,int section) {
+    struct { const char *name; char *value; size_t size; } texts[]={
+        {"address",b->address,sizeof b->address},{"host",b->host,sizeof b->host},
+        {"tls_server_name",b->tls_server_name,sizeof b->tls_server_name},
+        {"tls_ca_file",b->tls_ca_file,sizeof b->tls_ca_file},
+        {"tls_client_cert",b->tls_client_cert,sizeof b->tls_client_cert},
+        {"tls_client_key",b->tls_client_key,sizeof b->tls_client_key}
+    };
+    for(size_t i=0;i<sizeof texts/sizeof texts[0];i++)if(!strcmp(key,texts[i].name)) {
+        if(strlen(value)>=texts[i].size)return -1;
+        strcpy(texts[i].value,value);return 1;
+    }
+    struct { const char *name; unsigned *value, low, high; } numbers[]={
+        {"port",&b->port,1,65535},{"tls",&b->tls,0,1},
+        {"weight",&b->weight,1,1000},{"pool_limit",&b->pool_limit,1,16384}
+    };
+    size_t count=section?sizeof numbers/sizeof numbers[0]:2;
+    for(size_t i=0;i<count;i++)if(!strcmp(key,numbers[i].name)) {
+        unsigned long long n;
+        if(read_number(value,&n)<0 || n<numbers[i].low || n>numbers[i].high)return -1;
+        *numbers[i].value=(unsigned)n;return 1;
+    }
+    return 0;
+}
 int config_load(const char *path) {
     struct option { const char *name; unsigned *value; unsigned low, high; } options[] = {
+        {"upstream_health_enabled",&config.upstream_health_enabled,0,1},
         {"upstream_handshake_timeout_ms",&config.upstream_handshake_timeout_ms,1,300000},
         {"upstream_read_timeout_ms",&config.upstream_read_timeout_ms,1,300000},
         {"upstream_write_timeout_ms",&config.upstream_write_timeout_ms,1,300000},
@@ -36,8 +72,6 @@ int config_load(const char *path) {
         {"upstream_pool_idle_timeout_ms",&config.upstream_pool_idle_timeout_ms,1,300000},
         {"upstream_pool_max_age_ms",&config.upstream_pool_max_age_ms,1,3600000},
         {"upstream_pool_max_requests",&config.upstream_pool_max_requests,1,1000000},
-        {"upstream_tls",&config.upstream_tls,0,1},
-        {"upstream_port",&config.upstream_port,1,65535},
         {"upstream_connect_timeout_ms",&config.upstream_connect_timeout_ms,1,300000},
         {"upstream_response_timeout_ms",&config.upstream_response_timeout_ms,1,300000},
         {"port",&config.port,1,65535},{"max_connections",&config.max_connections,1,16384},
@@ -50,13 +84,9 @@ int config_load(const char *path) {
         {"auth_nonce_entries",&config.auth_nonce_entries,1,65536}
     };
     struct text_option { const char *name; char *value; size_t size; int allow_empty; } texts[]={
-        {"upstream_tls_server_name",config.upstream_tls_server_name,sizeof config.upstream_tls_server_name,1},
-        {"upstream_tls_ca_file",config.upstream_tls_ca_file,sizeof config.upstream_tls_ca_file,1},
-        {"upstream_tls_client_cert",config.upstream_tls_client_cert,sizeof config.upstream_tls_client_cert,1},
-        {"upstream_tls_client_key",config.upstream_tls_client_key,sizeof config.upstream_tls_client_key,1},
+        {"upstream_group",config.upstream_group,sizeof config.upstream_group,0},
+        {"upstream_health_path",config.upstream_health_path,sizeof config.upstream_health_path,0},
         {"proxy_prefix",config.proxy_prefix,sizeof config.proxy_prefix,1},
-        {"upstream_address",config.upstream_address,sizeof config.upstream_address,1},
-        {"upstream_host",config.upstream_host,sizeof config.upstream_host,1},
         {"bind_address",config.bind_address,sizeof config.bind_address,0},
         {"auth_credentials_file",config.auth_credentials_file,sizeof config.auth_credentials_file,1},
         {"document_root",config.document_root,sizeof config.document_root,0},
@@ -65,24 +95,53 @@ int config_load(const char *path) {
     };
     FILE *file=fopen(path,"r");if(!file){perror("configuration");return -1;}
     char line[4096], keys[64][64];unsigned line_no=0,key_count=0;
+    int legacy=0,health_set=0,balance_set=0;
+    struct backend_config *backend=NULL;
     while(fgets(line,sizeof line,file)) {
         ++line_no;
         if(!strchr(line,'\n') && !feof(file)) goto invalid;
         char *key=trim(line);if(!*key || *key=='#')continue;
+        if(*key=='[') {
+            size_t len=strlen(key);
+            if(len<11 || strncmp(key,"[backend ",9) || key[len-1]!=']' ||
+               legacy || !identifier(config.upstream_group) || config.backend_count==BACKEND_LIMIT)goto invalid;
+            key[len-1]=0;const char *name=key+9;
+            if(!identifier(name))goto invalid;
+            for(unsigned i=0;i<config.backend_count;i++)if(!strcmp(config.backends[i].name,name))goto invalid;
+            backend=&config.backends[config.backend_count++];
+            strcpy(backend->name,name);backend->weight=1;key_count=0;
+            continue;
+        }
         char *equal=strchr(key,'=');if(!equal)goto invalid;
         *equal=0;key=trim(key);char *value=trim(equal+1);
         if(!*key || strlen(key)>=64 || key_count>=64)goto invalid;
         for(unsigned i=0;i<key_count;++i)if(!strcmp(keys[i],key))goto invalid;
         strcpy(keys[key_count++],key);
+        if(backend) {
+            if(backend_option(backend,key,value,1)!=1)goto invalid;
+            continue;
+        }
+        if(!strncmp(key,"upstream_",9)) {
+            int result=backend_option(&config.backends[0],key+9,value,0);
+            if(result<0)goto invalid;
+            if(result){legacy=1;continue;}
+        }
+        if(!strcmp(key,"upstream_balance")) {
+            if(!strcmp(value,"round-robin"))config.upstream_balance=ROUND_ROBIN;
+            else if(!strcmp(value,"weighted-round-robin"))config.upstream_balance=WEIGHTED_ROUND_ROBIN;
+            else if(!strcmp(value,"least-connections"))config.upstream_balance=LEAST_CONNECTIONS;
+            else goto invalid;
+            balance_set=1;continue;
+        }
+        if(!strcmp(key,"upstream_health_enabled"))health_set=1;
         int found=0;
         for(size_t i=0;i<sizeof texts/sizeof texts[0];++i)if(!strcmp(key,texts[i].name)) {
             if(strlen(value)>=texts[i].size || (!*value && !texts[i].allow_empty))goto invalid;
             strcpy(texts[i].value,value);found=1;break;
         }
         if(found)continue;
-        if(!*value || *value<'0' || *value>'9')goto invalid;
-        errno=0;char *end;unsigned long long n=strtoull(value,&end,10);
-        if(errno || *end)goto invalid;
+        unsigned long long n;
+        if(read_number(value,&n)<0)goto invalid;
         if(!strcmp(key,"cache_bytes")) {
             if(n>268435456ULL)goto invalid;
             config.cache_bytes=(size_t)n;continue;
@@ -97,7 +156,9 @@ int config_load(const char *path) {
         }
         if(!found)goto invalid;
     }
-    if(ferror(file))goto invalid;
+    if(ferror(file) || (!!*config.upstream_group != !!config.backend_count) ||
+       (balance_set && !config.backend_count))goto invalid;
+    if(config.backend_count && !health_set)config.upstream_health_enabled=1;
     fclose(file);
     if((!*config.tls_cert)!=(!*config.tls_key)) {
         fprintf(stderr,"configuration: tls_cert and tls_key must be provided together\n");return -1;

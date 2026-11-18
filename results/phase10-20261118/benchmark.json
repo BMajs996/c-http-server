@@ -1,0 +1,373 @@
+{
+  "environment": {
+    "platform": "Linux-7.0.0-43-generic-x86_64-with-glibc2.43",
+    "python": "3.14.4",
+    "compiler": "cc (Ubuntu 15.2.0-16ubuntu1) 15.2.0"
+  },
+  "upstream": "three C HTTP backends, pool on, probes off, weights 5:1:1, log off",
+  "results": {
+    "round-robin": {
+      "summary": {
+        "trials": 3,
+        "valid_trials": 3,
+        "completed": 9000,
+        "errors": 0,
+        "median": {
+          "successful_requests_per_s": 8261.47,
+          "latency_ms.p50": 1.548,
+          "latency_ms.p95": 4.126,
+          "latency_ms.p99": 5.736
+        }
+      },
+      "trials": [
+        {
+          "scheme": "http",
+          "host": "127.0.0.1",
+          "port": 41989,
+          "path": "/proxy/api/status",
+          "paths_sha256": null,
+          "method": "GET",
+          "authentication": null,
+          "body_sha256": null,
+          "body_length": 0,
+          "path_count": 1,
+          "concurrency": 16,
+          "requests": 3000,
+          "keep_alive": true,
+          "warmup": 20,
+          "accept_encoding": null,
+          "completed": 3000,
+          "errors": 0,
+          "error_samples": [],
+          "warmup_errors": 0,
+          "warmup_error_samples": [],
+          "elapsed_s": 0.3631,
+          "successful_requests_per_s": 8261.47,
+          "latency_ms": {
+            "p50": 1.548,
+            "p95": 4.026,
+            "p99": 5.375
+          },
+          "body_bytes": 48000,
+          "backend_assignments_including_warmup": {
+            "a": 1007,
+            "b": 1007,
+            "c": 1006
+          }
+        },
+        {
+          "scheme": "http",
+          "host": "127.0.0.1",
+          "port": 46501,
+          "path": "/proxy/api/status",
+          "paths_sha256": null,
+          "method": "GET",
+          "authentication": null,
+          "body_sha256": null,
+          "body_length": 0,
+          "path_count": 1,
+          "concurrency": 16,
+          "requests": 3000,
+          "keep_alive": true,
+          "warmup": 20,
+          "accept_encoding": null,
+          "completed": 3000,
+          "errors": 0,
+          "error_samples": [],
+          "warmup_errors": 0,
+          "warmup_error_samples": [],
+          "elapsed_s": 0.3691,
+          "successful_requests_per_s": 8128.35,
+          "latency_ms": {
+            "p50": 1.594,
+            "p95": 4.28,
+            "p99": 5.893
+          },
+          "body_bytes": 48000,
+          "backend_assignments_including_warmup": {
+            "a": 1007,
+            "b": 1007,
+            "c": 1006
+          }
+        },
+        {
+          "scheme": "http",
+          "host": "127.0.0.1",
+          "port": 55611,
+          "path": "/proxy/api/status",
+          "paths_sha256": null,
+          "method": "GET",
+          "authentication": null,
+          "body_sha256": null,
+          "body_length": 0,
+          "path_count": 1,
+          "concurrency": 16,
+          "requests": 3000,
+          "keep_alive": true,
+          "warmup": 20,
+          "accept_encoding": null,
+          "completed": 3000,
+          "errors": 0,
+          "error_samples": [],
+          "warmup_errors": 0,
+          "warmup_error_samples": [],
+          "elapsed_s": 0.3555,
+          "successful_requests_per_s": 8439.33,
+          "latency_ms": {
+            "p50": 1.493,
+            "p95": 4.126,
+            "p99": 5.736
+          },
+          "body_bytes": 48000,
+          "backend_assignments_including_warmup": {
+            "a": 1007,
+            "b": 1007,
+            "c": 1006
+          }
+        }
+      ]
+    },
+    "weighted-round-robin": {
+      "summary": {
+        "trials": 3,
+        "valid_trials": 3,
+        "completed": 9000,
+        "errors": 0,
+        "median": {
+          "successful_requests_per_s": 8396.13,
+          "latency_ms.p50": 1.55,
+          "latency_ms.p95": 4.05,
+          "latency_ms.p99": 5.577
+        }
+      },
+      "trials": [
+        {
+          "scheme": "http",
+          "host": "127.0.0.1",
+          "port": 33185,
+          "path": "/proxy/api/status",
+          "paths_sha256": null,
+          "method": "GET",
+          "authentication": null,
+          "body_sha256": null,
+          "body_length": 0,
+          "path_count": 1,
+          "concurrency": 16,
+          "requests": 3000,
+          "keep_alive": true,
+          "warmup": 20,
+          "accept_encoding": null,
+          "completed": 3000,
+          "errors": 0,
+          "error_samples": [],
+          "warmup_errors": 0,
+          "warmup_error_samples": [],
+          "elapsed_s": 0.3637,
+          "successful_requests_per_s": 8248.68,
+          "latency_ms": {
+            "p50": 1.587,
+            "p95": 4.151,
+            "p99": 5.579
+          },
+          "body_bytes": 48000,
+          "backend_assignments_including_warmup": {
+            "a": 2157,
+            "b": 432,
+            "c": 431
+          }
+        },
+        {
+          "scheme": "http",
+          "host": "127.0.0.1",
+          "port": 38923,
+          "path": "/proxy/api/status",
+          "paths_sha256": null,
+          "method": "GET",
+          "authentication": null,
+          "body_sha256": null,
+          "body_length": 0,
+          "path_count": 1,
+          "concurrency": 16,
+          "requests": 3000,
+          "keep_alive": true,
+          "warmup": 20,
+          "accept_encoding": null,
+          "completed": 3000,
+          "errors": 0,
+          "error_samples": [],
+          "warmup_errors": 0,
+          "warmup_error_samples": [],
+          "elapsed_s": 0.3573,
+          "successful_requests_per_s": 8396.13,
+          "latency_ms": {
+            "p50": 1.55,
+            "p95": 4.04,
+            "p99": 5.477
+          },
+          "body_bytes": 48000,
+          "backend_assignments_including_warmup": {
+            "a": 2157,
+            "b": 432,
+            "c": 431
+          }
+        },
+        {
+          "scheme": "http",
+          "host": "127.0.0.1",
+          "port": 37229,
+          "path": "/proxy/api/status",
+          "paths_sha256": null,
+          "method": "GET",
+          "authentication": null,
+          "body_sha256": null,
+          "body_length": 0,
+          "path_count": 1,
+          "concurrency": 16,
+          "requests": 3000,
+          "keep_alive": true,
+          "warmup": 20,
+          "accept_encoding": null,
+          "completed": 3000,
+          "errors": 0,
+          "error_samples": [],
+          "warmup_errors": 0,
+          "warmup_error_samples": [],
+          "elapsed_s": 0.3485,
+          "successful_requests_per_s": 8607.88,
+          "latency_ms": {
+            "p50": 1.49,
+            "p95": 4.05,
+            "p99": 5.577
+          },
+          "body_bytes": 48000,
+          "backend_assignments_including_warmup": {
+            "a": 2157,
+            "b": 432,
+            "c": 431
+          }
+        }
+      ]
+    },
+    "least-connections": {
+      "summary": {
+        "trials": 3,
+        "valid_trials": 3,
+        "completed": 9000,
+        "errors": 0,
+        "median": {
+          "successful_requests_per_s": 7784.57,
+          "latency_ms.p50": 1.631,
+          "latency_ms.p95": 4.609,
+          "latency_ms.p99": 6.996
+        }
+      },
+      "trials": [
+        {
+          "scheme": "http",
+          "host": "127.0.0.1",
+          "port": 46571,
+          "path": "/proxy/api/status",
+          "paths_sha256": null,
+          "method": "GET",
+          "authentication": null,
+          "body_sha256": null,
+          "body_length": 0,
+          "path_count": 1,
+          "concurrency": 16,
+          "requests": 3000,
+          "keep_alive": true,
+          "warmup": 20,
+          "accept_encoding": null,
+          "completed": 3000,
+          "errors": 0,
+          "error_samples": [],
+          "warmup_errors": 0,
+          "warmup_error_samples": [],
+          "elapsed_s": 0.4751,
+          "successful_requests_per_s": 6314.11,
+          "latency_ms": {
+            "p50": 1.898,
+            "p95": 5.335,
+            "p99": 8.876
+          },
+          "body_bytes": 48000,
+          "backend_assignments_including_warmup": {
+            "a": 1003,
+            "b": 1005,
+            "c": 1012
+          }
+        },
+        {
+          "scheme": "http",
+          "host": "127.0.0.1",
+          "port": 38661,
+          "path": "/proxy/api/status",
+          "paths_sha256": null,
+          "method": "GET",
+          "authentication": null,
+          "body_sha256": null,
+          "body_length": 0,
+          "path_count": 1,
+          "concurrency": 16,
+          "requests": 3000,
+          "keep_alive": true,
+          "warmup": 20,
+          "accept_encoding": null,
+          "completed": 3000,
+          "errors": 0,
+          "error_samples": [],
+          "warmup_errors": 0,
+          "warmup_error_samples": [],
+          "elapsed_s": 0.3854,
+          "successful_requests_per_s": 7784.57,
+          "latency_ms": {
+            "p50": 1.588,
+            "p95": 4.609,
+            "p99": 6.996
+          },
+          "body_bytes": 48000,
+          "backend_assignments_including_warmup": {
+            "a": 1007,
+            "b": 1008,
+            "c": 1005
+          }
+        },
+        {
+          "scheme": "http",
+          "host": "127.0.0.1",
+          "port": 59953,
+          "path": "/proxy/api/status",
+          "paths_sha256": null,
+          "method": "GET",
+          "authentication": null,
+          "body_sha256": null,
+          "body_length": 0,
+          "path_count": 1,
+          "concurrency": 16,
+          "requests": 3000,
+          "keep_alive": true,
+          "warmup": 20,
+          "accept_encoding": null,
+          "completed": 3000,
+          "errors": 0,
+          "error_samples": [],
+          "warmup_errors": 0,
+          "warmup_error_samples": [],
+          "elapsed_s": 0.367,
+          "successful_requests_per_s": 8174.27,
+          "latency_ms": {
+            "p50": 1.631,
+            "p95": 4.259,
+            "p99": 5.631
+          },
+          "body_bytes": 48000,
+          "backend_assignments_including_warmup": {
+            "a": 1008,
+            "b": 1006,
+            "c": 1006
+          }
+        }
+      ]
+    }
+  }
+}

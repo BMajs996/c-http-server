@@ -15,7 +15,7 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <openssl/x509v3.h>
-static SSL_CTX *context;
+static SSL_CTX *contexts[BACKEND_LIMIT];
 #endif
 struct upstream {
     int fd,connecting,ready,fatal,closing;
@@ -44,48 +44,54 @@ static int tls_result(upstream *u,int rc,uint32_t *interest) {
     return error==SSL_ERROR_ZERO_RETURN?0:-1;
 }
 #endif
-int upstream_init(void) {
-    if(!config.upstream_tls)return 0;
+static int init_backend(unsigned index) {
+    const struct backend_config *b=&config.backends[index];
+    if(!b->tls)return 0;
 #ifdef WITH_TLS
-    context=SSL_CTX_new(TLS_client_method());
+    SSL_CTX *context=contexts[index]=SSL_CTX_new(TLS_client_method());
     if(!context)goto fail;
     SSL_CTX_set_default_passwd_cb(context,no_password);
     SSL_CTX_set_verify(context,SSL_VERIFY_PEER,NULL);
     SSL_CTX_set_options(context,SSL_OP_NO_COMPRESSION|SSL_OP_NO_RENEGOTIATION);
     SSL_CTX_set_mode(context,SSL_MODE_ENABLE_PARTIAL_WRITE);
     if(!SSL_CTX_set_min_proto_version(context,TLS1_2_VERSION) ||
-       !SSL_CTX_load_verify_locations(context,config.upstream_tls_ca_file,NULL) ||
+       !SSL_CTX_load_verify_locations(context,b->tls_ca_file,NULL) ||
        SSL_CTX_set_alpn_protos(context,(const unsigned char *)"\x08http/1.1",9)!=0)goto fail;
-    if(*config.upstream_tls_client_cert &&
-       (SSL_CTX_use_certificate_chain_file(context,config.upstream_tls_client_cert)!=1 ||
-        SSL_CTX_use_PrivateKey_file(context,config.upstream_tls_client_key,SSL_FILETYPE_PEM)!=1 ||
+    if(*b->tls_client_cert &&
+       (SSL_CTX_use_certificate_chain_file(context,b->tls_client_cert)!=1 ||
+        SSL_CTX_use_PrivateKey_file(context,b->tls_client_key,SSL_FILETYPE_PEM)!=1 ||
         SSL_CTX_check_private_key(context)!=1))goto fail;
     return 0;
 fail:
     fprintf(stderr,"upstream TLS: cannot load CA or matching client certificate/key\n");
-    upstream_close();return -1;
+    return -1;
 #else
     fprintf(stderr,"upstream TLS requires a TLS=1 build\n");return -1;
 #endif
 }
+int upstream_init(void) {
+    for(unsigned i=0;i<config.backend_count;i++)if(init_backend(i)<0){upstream_close();return -1;}
+    return 0;
+}
 void upstream_close(void) {
 #ifdef WITH_TLS
-    SSL_CTX_free(context);context=NULL;
+    for(unsigned i=0;i<BACKEND_LIMIT;i++){SSL_CTX_free(contexts[i]);contexts[i]=NULL;}
 #endif
 }
-upstream *upstream_open(int64_t now,int *error) {
+upstream *upstream_open(unsigned index,int64_t now,int *error) {
+    const struct backend_config *b=&config.backends[index];
     struct sockaddr_storage address;socklen_t size;
     *error=502;
-    if(deployment_address(config.upstream_address,config.upstream_port,&address,&size)<0)return NULL;
+    if(deployment_address(b->address,b->port,&address,&size)<0)return NULL;
     *error=503;upstream *u=calloc(1,sizeof *u);if(!u)return NULL;
     u->fd=socket(address.ss_family,SOCK_STREAM|SOCK_NONBLOCK|SOCK_CLOEXEC,0);
     if(u->fd<0){free(u);return NULL;}
     int flag=1;
     if(setsockopt(u->fd,IPPROTO_TCP,TCP_NODELAY,&flag,sizeof flag)<0)goto fail;
 #ifdef WITH_TLS
-    if(config.upstream_tls) {
-        unsigned char ip[16];const char *name=config.upstream_tls_server_name;
-        u->ssl=context?SSL_new(context):NULL;
+    if(b->tls) {
+        unsigned char ip[16];const char *name=b->tls_server_name;
+        u->ssl=contexts[index]?SSL_new(contexts[index]):NULL;
         if(!u->ssl || SSL_set_fd(u->ssl,u->fd)!=1)goto fail;
         int numeric=inet_pton(AF_INET,name,ip)==1 || inet_pton(AF_INET6,name,ip)==1;
         if(numeric) {
